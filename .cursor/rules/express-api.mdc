@@ -1,0 +1,28 @@
+---
+description: Express 路由、middleware 與錯誤處理
+globs: "**/*.ts"
+alwaysApply: false
+---
+
+# Express API 規範
+
+## 分層
+
+- 路由只做參數傳遞與呼叫 controller，不寫業務邏輯
+- 業務邏輯放在 service 層，controller 呼叫 service
+- 錯誤由統一 error middleware 處理，回傳格式依 api-contract.mdc
+
+## 錯誤處理
+
+- 使用 `next(err)` 傳給 error middleware
+- 自訂錯誤可帶 `statusCode`、`code`、`message`，middleware 轉成 `{ error: { code, message } }` 與對應 HTTP status
+
+## 範例
+
+```ts
+// route
+router.get('/sites', authMiddleware, getSitesController);
+
+// controller: 呼叫 service，捕捉錯誤 next(err)
+// error middleware: 依 err.statusCode 或預設 500 回傳 JSON
+```

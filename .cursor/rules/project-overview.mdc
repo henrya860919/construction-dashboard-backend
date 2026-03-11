@@ -1,0 +1,39 @@
+---
+description: 後端技術棧與專案結構總覽
+alwaysApply: true
+---
+
+# Construction Dashboard - Backend
+
+## 技術棧
+
+- **Runtime**: Node.js
+- **框架**: Express
+- **驗證**: Zod（型別安全、與 TS 搭配）
+- **認證**: JWT + bcrypt
+- **資料庫**: PostgreSQL（Railway）
+- **檔案儲存**: Cloudflare R2（S3 相容）
+- **部署**: Railway（CI/CD 由 GitHub 觸發）
+
+## 目錄結構約定
+
+- `src/routes/` - 路由定義
+- `src/controllers/` 或 `src/handlers/` - 請求處理、呼叫 service
+- `src/services/` - 業務邏輯
+- `src/middleware/` - 認證、錯誤處理等
+- `src/schemas/` - Zod schemas
+- `src/utils/` - 共用工具
+
+## 環境變數
+
+- `PORT`, `NODE_ENV`
+- `DATABASE_URL`（PostgreSQL）
+- `JWT_SECRET`, `JWT_REFRESH_SECRET`（若使用 refresh token）
+- R2 相關: 依 Cloudflare R2 文件（endpoint, access key, secret, bucket）
+- `CORS_ORIGIN` - 允許的前端 origin（dev / prod 分開）
+
+## 命名
+
+- 檔案: kebab-case
+- API 路徑: kebab-case（如 `/api/v1/construction-sites`）
+- 變數/函式: camelCase

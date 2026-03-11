@@ -1,0 +1,23 @@
+---
+description: JWT 與 bcrypt 認證實作約定
+globs: "**/*.ts"
+alwaysApply: false
+---
+
+# 認證規範（JWT + bcrypt）
+
+## 密碼
+
+- 儲存前一律用 bcrypt hash，cost factor 建議 10–12
+- 登入時用 `bcrypt.compare(plain, hash)` 比對，勿比對明文
+
+## JWT
+
+- Access token 從 Header 讀取: `Authorization: Bearer <token>`
+- 過期時間依需求設定（例如 access 15min、refresh 7d）
+- 保護路由: middleware 驗證 JWT，失敗回 401 + `{ error: { code, message } }`
+
+## 安全
+
+- 不在 log 或回應中輸出密碼、完整 token
+- 登入成功回傳 `{ data: { accessToken, user } }`，不回傳 refresh token 至 body 時考慮 httpOnly cookie

@@ -1,0 +1,27 @@
+---
+description: API 回應格式、錯誤結構與狀態碼約定
+alwaysApply: true
+---
+
+# API 契約（後端實作）
+
+## 成功回應
+
+- 結構: `{ data: T, meta?: { page?, limit?, total? } }`
+- 2xx: `res.status(200).json({ data })` 或 `res.status(201).json({ data })`
+
+## 錯誤回應
+
+- 結構: `{ error: { code: string, message: string } }`
+- 400 驗證錯誤可帶 `details`（如 Zod issues 簡化版）
+- 401 Unauthorized、403 Forbidden、404 Not Found、500 依情境回傳對應 status + 上述結構
+- 勿在回應中暴露 stack 或內部錯誤訊息；500 回通用訊息
+
+## 分頁
+
+- Query: `?page=1&limit=20`
+- 回應 meta: `{ page, limit, total }`，列表在 `data` 陣列
+
+## 日期
+
+- 統一 ISO 8601（如 `2025-03-11T12:00:00.000Z`）

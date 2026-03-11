@@ -1,0 +1,29 @@
+---
+description: 使用 Zod 做請求驗證與型別
+globs: "**/*.ts"
+alwaysApply: false
+---
+
+# Zod 驗證規範
+
+## 使用時機
+
+- 所有 API 的 body、query、params 經 Zod schema 驗證後再使用
+- 在 route 或 middleware 中呼叫 `schema.parse()` 或 `schema.safeParse()`
+
+## 驗證失敗
+
+- 回傳 400，格式: `{ error: { code: 'VALIDATION_ERROR', message: '...', details?: [...] } }`
+- details 可為 Zod 的 `issues` 簡化版（欄位、訊息），勿暴露內部結構
+
+## 型別
+
+- 使用 `z.infer<typeof schema>` 取得型別，不在別處重複宣告 request body/query 型別
+
+## 範例
+
+```ts
+const createSiteSchema = z.object({ name: z.string().min(1), address: z.string().optional() });
+type CreateSiteBody = z.infer<typeof createSiteSchema>;
+// 在 handler 中: safeParse(body) → 失敗則 400 + 上述格式
+```
