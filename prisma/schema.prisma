@@ -1,0 +1,80 @@
+// Construction Dashboard - 多專案、人員；預留租戶
+// https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------- 租戶（多租戶時使用；單租戶可僅一筆或固定 id）----------
+model Tenant {
+  id        String    @id @default(cuid())
+  name      String
+  slug      String?   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users    User[]
+  projects Project[]
+}
+
+// ---------- 人員（使用者）----------
+enum SystemRole {
+  platform_admin  // 平台管理員（多租後台）
+  tenant_admin    // 租戶／公司管理員（單租後台）
+  project_user    // 專案層使用者
+}
+
+model User {
+  id           String     @id @default(cuid())
+  email        String     @unique
+  passwordHash String     @map("password_hash")
+  name         String?
+  systemRole   SystemRole @default(project_user) @map("system_role")
+  tenantId     String?    @map("tenant_id")
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  tenant        Tenant?         @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  projectMembers ProjectMember[]
+}
+
+// ---------- 專案 ----------
+model Project {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  code        String?  // 專案代碼
+  status      String   @default("active") // active | archived
+  tenantId    String?  @map("tenant_id")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant         Tenant?         @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  projectMembers ProjectMember[]
+}
+
+// ---------- 專案成員（使用者－專案－角色）----------
+enum ProjectRole {
+  project_admin  // 專案管理員
+  member         // 一般成員
+  viewer         // 唯讀
+}
+
+model ProjectMember {
+  id        String     @id @default(cuid())
+  projectId String     @map("project_id")
+  userId    String     @map("user_id")
+  role      ProjectRole @default(member)
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, userId])
+  @@map("project_members")
+}

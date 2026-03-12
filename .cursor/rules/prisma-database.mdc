@@ -1,0 +1,28 @@
+---
+description: 後端資料庫使用 Prisma ORM 的約定
+alwaysApply: true
+---
+
+# 後端：Prisma 與資料庫
+
+## ORM
+
+- 使用 **Prisma 7** 作為 ORM（非「插件」；取代直接使用 `pg` 撰寫 SQL）。
+- Schema 定義在 `prisma/schema.prisma`；連線 URL 在 `prisma.config.ts`（`DATABASE_URL`）。
+- 程式中一律透過 `src/lib/db.ts` 匯出的 `prisma` 單例存取資料，勿再建立額外 PrismaClient 或直接使用 `pg` 做業務查詢。
+
+## 新增／修改資料表
+
+1. 編輯 `prisma/schema.prisma`（model、enum、關聯）。
+2. 執行 `npm run db:migrate:dev -- --name 描述` 產生並套用 migration（需 DATABASE_URL 與 DB 可連）。
+3. 必要時執行 `npm run db:generate` 更新 Client 型別。
+
+## 查詢與寫入
+
+- 使用 `prisma.*.findMany`、`findUnique`、`create`、`update`、`delete` 等，並以 `select` 控制回傳欄位（勿回傳密碼等敏感欄位）。
+- 驗證輸入使用 Zod（`src/schemas/`），再傳入 Prisma。
+
+## 人員與專案
+
+- **User**（人員）、**Project**（專案）、**ProjectMember**（專案成員）、**Tenant**（租戶）已定義於 schema；API 見 `docs/backend-prisma-api.md`。
+- 之後加功能（例如專案成員 CRUD、權限過濾）時，仍以 Prisma 查詢，並在 route 或 service 層做權限檢查。

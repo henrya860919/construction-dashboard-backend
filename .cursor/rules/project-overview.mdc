@@ -11,18 +11,21 @@ alwaysApply: true
 - **框架**: Express
 - **驗證**: Zod（型別安全、與 TS 搭配）
 - **認證**: JWT + bcrypt
-- **資料庫**: PostgreSQL（Railway）
+- **資料庫**: PostgreSQL（Railway）；**ORM**: Prisma 7（見 `.cursor/rules/prisma-database.mdc`）
 - **檔案儲存**: Cloudflare R2（S3 相容）
 - **部署**: Railway（CI/CD 由 GitHub 觸發）
 
-## 目錄結構約定
+## 目錄結構約定（模組化）
 
-- `src/routes/` - 路由定義
-- `src/controllers/` 或 `src/handlers/` - 請求處理、呼叫 service
-- `src/services/` - 業務邏輯
-- `src/middleware/` - 認證、錯誤處理等
-- `src/schemas/` - Zod schemas
-- `src/utils/` - 共用工具
+- `src/routes/` - API 路由定義，只做掛載並委派給 module 的 controller（搭配 `asyncHandler`）
+- `src/modules/<resource>/` - 功能模組：`controller` → `service` → `repository`
+  - `*.controller.ts` - 解析 req、Zod 驗證、呼叫 service、回傳 res
+  - `*.service.ts` - 業務邏輯、拋出 `AppError`（由 error-handler 轉成 API 錯誤）
+  - `*.repository.ts` - Prisma 查詢／寫入，不回傳敏感欄位（如 passwordHash）
+- `src/shared/` - 共用：`errors.ts`（AppError）、`utils/`（pagination、async-handler）
+- `src/middleware/` - 認證、錯誤處理（error-handler 接住 AppError 與未捕獲錯誤）
+- `src/schemas/` - Zod schemas（create/update 等）
+- `src/lib/` - Prisma、DB 等基礎設施
 
 ## 環境變數
 

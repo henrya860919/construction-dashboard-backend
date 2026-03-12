@@ -1,4 +1,5 @@
 import type { Request, Response, NextFunction } from 'express'
+import { AppError } from '../shared/errors.js'
 
 export function errorHandler(
   err: unknown,
@@ -6,12 +7,16 @@ export function errorHandler(
   res: Response,
   _next: NextFunction
 ) {
-  const statusCode = (err as { statusCode?: number }).statusCode ?? 500
-  const code = (err as { code?: string }).code ?? 'INTERNAL_ERROR'
-  const message =
-    statusCode === 500
-      ? 'Internal server error'
-      : (err as Error).message ?? 'Unknown error'
+  if (err instanceof AppError) {
+    res.status(err.statusCode).json({
+      error: { code: err.code, message: err.message },
+    })
+    return
+  }
+
+  const statusCode = 500
+  const code = 'INTERNAL_ERROR'
+  const message = 'Internal server error'
 
   res.status(statusCode).json({
     error: { code, message },
