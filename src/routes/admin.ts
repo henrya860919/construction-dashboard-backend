@@ -1,15 +1,61 @@
 /**
- * 單租後台 API：專案管理、成員管理（限定本租戶）
+ * 單租後台 API：專案管理、成員管理、租戶資訊（限定本租戶）
  * 需 authMiddleware + requireAdmin（tenant_admin 或 platform_admin）
  */
 import { Router, type Request, type Response } from 'express'
 import { prisma } from '../lib/db.js'
 import { createUserSchema } from '../schemas/user.js'
 import { userService } from '../modules/user/index.js'
+import { fileRepository } from '../modules/file/file.repository.js'
 import { asyncHandler } from '../shared/utils/async-handler.js'
 import { AppError } from '../shared/errors.js'
 
 export const adminRouter = Router()
+
+/** GET /api/v1/admin/tenant-info — 本租戶資訊（唯讀）：租戶欄位 + 成員數、專案數、總儲存用量 */
+adminRouter.get(
+  '/tenant-info',
+  asyncHandler(async (req: Request, res: Response) => {
+    const user = req.user!
+    const tenantId = user.tenantId ?? (req.query.tenantId as string | undefined)
+    if (!tenantId) {
+      throw new AppError(404, 'NOT_FOUND', '無所屬租戶或未指定租戶')
+    }
+    if (user.systemRole !== 'platform_admin' && user.tenantId !== tenantId) {
+      throw new AppError(403, 'FORBIDDEN', '僅能查看所屬租戶資訊')
+    }
+    const tenant = await prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: {
+        id: true,
+        name: true,
+        slug: true,
+        status: true,
+        expiresAt: true,
+        userLimit: true,
+        fileSizeLimitMb: true,
+        storageQuotaMb: true,
+        createdAt: true,
+        updatedAt: true,
+        _count: { select: { users: true, projects: true } },
+      },
+    })
+    if (!tenant) {
+      throw new AppError(404, 'NOT_FOUND', '找不到該租戶')
+    }
+    const storageUsageBytes = await fileRepository.getTenantStorageUsageBytesSimple(tenantId)
+    const t = tenant as typeof tenant & { _count: { users: number; projects: number } }
+    const { _count, ...rest } = t
+    res.status(200).json({
+      data: {
+        ...rest,
+        memberCount: _count.users,
+        projectCount: _count.projects,
+        storageUsageBytes,
+      },
+    })
+  })
+)
 
 /** GET /api/v1/admin/projects — 本租戶專案列表（tenant_admin 僅本租戶；platform_admin 可帶 query tenantId） */
 adminRouter.get('/projects', async (req: Request, res: Response) => {
