@@ -21,8 +21,9 @@ const projectInfoSchema = z.object({
   summary: z.string().optional().nullable(),
   benefits: z.string().optional().nullable(),
   startDate: z.string().optional().nullable(), // ISO date
-  plannedEndDate: z.string().optional().nullable(),
-  revisedEndDate: z.string().optional().nullable(), // 變更竣工日期
+  plannedDurationDays: z.number().int().min(0).optional().nullable(), // 工期（天數）；預定完工 = 開工 + 工期
+  plannedEndDate: z.string().optional().nullable(), // 由開工+工期算出，可不再傳入
+  revisedEndDate: z.string().optional().nullable(), // 由開工+工期+調整工期算出，API 回傳用
   siteManager: z.string().optional().nullable(),
   contactPhone: z.string().optional().nullable(),
   projectStaff: z.string().optional().nullable(),

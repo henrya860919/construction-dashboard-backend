@@ -15,6 +15,7 @@ const projectSelect = {
   summary: true,
   benefits: true,
   startDate: true,
+  plannedDurationDays: true,
   plannedEndDate: true,
   revisedEndDate: true,
   siteManager: true,
@@ -37,6 +38,7 @@ export type ProjectListItem = {
   summary: string | null
   benefits: string | null
   startDate: Date | null
+  plannedDurationDays: number | null
   plannedEndDate: Date | null
   revisedEndDate: Date | null
   siteManager: string | null
@@ -100,6 +102,7 @@ export const projectRepository = {
       summary: string | null
       benefits: string | null
       startDate: Date | null
+      plannedDurationDays: number | null
       plannedEndDate: Date | null
       revisedEndDate: Date | null
       siteManager: string | null
@@ -120,6 +123,7 @@ export const projectRepository = {
         ...(data.summary !== undefined && { summary: data.summary }),
         ...(data.benefits !== undefined && { benefits: data.benefits }),
         ...(data.startDate !== undefined && { startDate: data.startDate }),
+        ...(data.plannedDurationDays !== undefined && { plannedDurationDays: data.plannedDurationDays }),
         ...(data.plannedEndDate !== undefined && { plannedEndDate: data.plannedEndDate }),
         ...(data.revisedEndDate !== undefined && { revisedEndDate: data.revisedEndDate }),
         ...(data.siteManager !== undefined && { siteManager: data.siteManager }),

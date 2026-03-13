@@ -14,8 +14,12 @@ alwaysApply: true
 ## 新增／修改資料表
 
 1. 編輯 `prisma/schema.prisma`（model、enum、關聯）。
-2. 執行 `npm run db:migrate:dev -- --name 描述` 產生並套用 migration（需 DATABASE_URL 與 DB 可連）。
-3. 必要時執行 `npm run db:generate` 更新 Client 型別。
+2. **必須**執行 migration 與 generate，勿只改 schema 不跑：
+   - 開發／本機：`npm run db:migrate:dev -- --name 描述` 產生並套用 migration（需 DATABASE_URL 與 DB 可連）。
+   - 若 migration 已存在僅需套用：`npx prisma migrate deploy`。
+3. 必要時執行 `npm run db:generate` 更新 Client 型別（migrate:dev 通常會一併觸發）。
+
+**規範：** 每次變更 schema 後，由 agent 直接執行上述指令，確保資料庫與 Prisma Client 同步，使用者無需手動跑。
 
 ## 查詢與寫入
 

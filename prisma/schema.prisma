@@ -44,11 +44,12 @@ model User {
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
 
-  tenant        Tenant?         @relation(fields: [tenantId], references: [id], onDelete: SetNull)
-  projectMembers ProjectMember[]
-  attachments   Attachment[]
-  loginLogs     LoginLog[]
-  auditLogs     AuditLog[]
+  tenant            Tenant?            @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  projectMembers    ProjectMember[]
+  attachments       Attachment[]
+  loginLogs         LoginLog[]
+  auditLogs         AuditLog[]
+  announcementReads AnnouncementRead[]
 }
 
 // ---------- 登入紀錄（平台監控用）----------
@@ -104,8 +105,26 @@ model PlatformAnnouncement {
   createdAt        DateTime  @default(now()) @map("created_at")
   updatedAt        DateTime  @updatedAt @map("updated_at")
 
+  reads AnnouncementRead[]
+
   @@index([publishedAt, expiresAt])
   @@map("platform_announcements")
+}
+
+// ---------- 公告已讀（使用者關閉／已讀後紀錄，供「不再主動跳出」與統計）----------
+model AnnouncementRead {
+  id             String   @id @default(cuid())
+  userId         String   @map("user_id")
+  announcementId String   @map("announcement_id")
+  readAt         DateTime @default(now()) @map("read_at")
+
+  user         User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  announcement PlatformAnnouncement @relation(fields: [announcementId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, announcementId])
+  @@index([userId])
+  @@index([announcementId])
+  @@map("announcement_reads")
 }
 
 // ---------- 平台設定（key-value，維護模式、功能開關等）----------
@@ -156,9 +175,10 @@ model Project {
   contractor     String?  @map("contractor")        // 施工廠商
   summary        String?  @map("summary")          // 工程概要
   benefits       String?  @map("benefits")          // 工程效益
-  startDate      DateTime? @map("start_date")       // 開工日期
-  plannedEndDate DateTime? @map("planned_end_date")  // 預定完工日期（原訂）
-  revisedEndDate  DateTime? @map("revised_end_date") // 變更竣工日期（依工期調整後；未變更則 null）
+  startDate           DateTime? @map("start_date")       // 開工日期
+  plannedDurationDays Int?      @map("planned_duration_days") // 工期（天數）；預定完工 = 開工 + 工期
+  plannedEndDate       DateTime? @map("planned_end_date")  // 預定完工日期（由開工+工期算出；保留供相容）
+  revisedEndDate      DateTime? @map("revised_end_date")  // 預定竣工 = 開工+工期+調整工期（由 API 計算回傳）
   siteManager    String?  @map("site_manager")      // 工地負責人
   contactPhone   String?  @map("contact_phone")    // 聯絡電話
   projectStaff   String?  @map("project_staff")    // 專案工程人員

@@ -85,7 +85,7 @@ export const projectController = {
     const auditFields = [
       'name', 'description', 'code', 'status', 'designUnit', 'supervisionUnit',
       'contractor', 'summary', 'benefits', 'siteManager', 'contactPhone', 'projectStaff',
-      'startDate', 'plannedEndDate', 'revisedEndDate',
+      'startDate', 'plannedDurationDays', 'plannedEndDate', 'revisedEndDate',
     ] as const
     const toSnapshot = (p: typeof project) => {
       const out: Record<string, unknown> = {}

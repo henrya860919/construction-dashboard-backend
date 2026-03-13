@@ -18,6 +18,9 @@ export function errorHandler(
   const code = 'INTERNAL_ERROR'
   const message = 'Internal server error'
 
+  // 開發／除錯時在伺服器 log 印出實際錯誤，方便排查（勿將 stack 回傳給前端）
+  console.error('[500]', err)
+
   res.status(statusCode).json({
     error: { code, message },
   })
