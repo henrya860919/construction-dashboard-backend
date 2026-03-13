@@ -27,11 +27,17 @@
     "cors": "^2.8.5",
     "dotenv": "^17.3.1",
     "express": "^4.21.1",
+    "express-rate-limit": "^8.3.1",
+    "helmet": "^8.1.0",
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.1.1",
     "pg": "^8.13.1",
     "prisma": "^7.5.0",
     "zod": "^3.23.8"
+  },
+  "overrides": {
+    "tar": ">=7.5.11",
+    "lodash": ">=4.17.21"
   },
   "devDependencies": {
     "@eslint/js": "^9.15.0",

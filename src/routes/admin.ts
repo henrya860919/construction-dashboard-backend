@@ -65,7 +65,7 @@ adminRouter.get('/projects', async (req: Request, res: Response) => {
     const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 20))
     const skip = (page - 1) * limit
 
-    let where: { tenantId?: string } = {}
+    const where: { tenantId?: string } = {}
     if (user.systemRole === 'platform_admin') {
       const tenantId = req.query.tenantId as string | undefined
       if (tenantId) where.tenantId = tenantId

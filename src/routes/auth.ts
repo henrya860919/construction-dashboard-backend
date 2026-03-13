@@ -1,4 +1,5 @@
 import { Router, type Request, type Response } from 'express'
+import rateLimit from 'express-rate-limit'
 import jwt from 'jsonwebtoken'
 import bcrypt from 'bcrypt'
 import { prisma } from '../lib/db.js'
@@ -10,12 +11,24 @@ if (!JWT_SECRET) {
   throw new Error('JWT_SECRET is required')
 }
 
-const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN ?? '7d' // 7 days in ms when number
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN ?? '7d'
+
+const loginRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (_req, res) => {
+    res.status(429).json({
+      error: { code: 'TOO_MANY_REQUESTS', message: '登入嘗試次數過多，請稍後再試' },
+    })
+  },
+})
 
 export const authRouter = Router()
 
 /** POST /api/v1/auth/login — 登入，回傳 accessToken 與 user */
-authRouter.post('/login', async (req: Request, res: Response) => {
+authRouter.post('/login', loginRateLimiter, async (req: Request, res: Response) => {
   try {
     const parsed = loginSchema.safeParse(req.body)
     if (!parsed.success) {
@@ -57,7 +70,7 @@ authRouter.post('/login', async (req: Request, res: Response) => {
         tenantId: user.tenantId,
       },
       JWT_SECRET,
-      { expiresIn: 7 * 24 * 60 * 60 }
+      { expiresIn: JWT_EXPIRES_IN } as jwt.SignOptions
     )
 
     res.status(200).json({

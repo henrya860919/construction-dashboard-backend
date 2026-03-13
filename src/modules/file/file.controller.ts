@@ -53,13 +53,13 @@ export const fileController = {
     const id = req.params.id as string
     const download = req.query.download === 'true' || req.query.download === '1'
     const result = await fileService.getById(id, req.user.id, req.user)
-    const { stream, contentType, ...meta } = result
+    const { stream, ...meta } = result
     if (!stream) {
       throw new AppError(500, 'INTERNAL_ERROR', '無法讀取檔案')
     }
     res.setHeader('Content-Type', meta.mimeType)
     if (download) {
-      const safeAscii = meta.fileName.replace(/[^\x00-\x7F]/g, '_').trim() || 'download'
+      const safeAscii = meta.fileName.replace(/[^\x20-\x7E]/g, '_').trim() || 'download'
       res.setHeader(
         'Content-Disposition',
         `attachment; filename="${safeAscii}"; filename*=UTF-8''${encodeURIComponent(meta.fileName)}`

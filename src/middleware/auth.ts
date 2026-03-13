@@ -23,7 +23,9 @@ export function authMiddleware(
   }
 
   try {
-    const decoded = jwt.verify(token, JWT_SECRET as jwt.Secret)
+    const decoded = jwt.verify(token, JWT_SECRET as jwt.Secret, {
+      algorithms: ['HS256'],
+    })
     const payload = decoded as unknown as {
       sub: string
       email: string
