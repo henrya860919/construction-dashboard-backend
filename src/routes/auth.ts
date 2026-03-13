@@ -5,6 +5,18 @@ import bcrypt from 'bcrypt'
 import { prisma } from '../lib/db.js'
 import { loginSchema } from '../schemas/auth.js'
 import { authMiddleware } from '../middleware/auth.js'
+import { loginLogRepository } from '../modules/login-log/login-log.repository.js'
+import { isMaintenanceMode } from '../middleware/maintenance.js'
+
+function getClientIp(req: Request): string | null {
+  const forwarded = req.headers['x-forwarded-for']
+  if (typeof forwarded === 'string') return forwarded.split(',')[0]?.trim() ?? null
+  return req.ip ?? null
+}
+function getClientUserAgent(req: Request): string | null {
+  const ua = req.headers['user-agent']
+  return typeof ua === 'string' ? ua : null
+}
 
 const JWT_SECRET = process.env.JWT_SECRET
 if (!JWT_SECRET) {
@@ -47,6 +59,16 @@ authRouter.post('/login', loginRateLimiter, async (req: Request, res: Response) 
     })
 
     if (!user) {
+      loginLogRepository
+        .create({
+          userId: null,
+          email: parsed.data.email,
+          success: false,
+          ipAddress: getClientIp(req),
+          userAgent: getClientUserAgent(req),
+          failureReason: 'user_not_found',
+        })
+        .catch((e) => console.error('LoginLog create', e))
       res.status(401).json({
         error: { code: 'UNAUTHORIZED', message: 'Email 或密碼錯誤' },
       })
@@ -55,11 +77,51 @@ authRouter.post('/login', loginRateLimiter, async (req: Request, res: Response) 
 
     const valid = await bcrypt.compare(parsed.data.password, user.passwordHash)
     if (!valid) {
+      loginLogRepository
+        .create({
+          userId: user.id,
+          email: parsed.data.email,
+          success: false,
+          ipAddress: getClientIp(req),
+          userAgent: getClientUserAgent(req),
+          failureReason: 'invalid_password',
+        })
+        .catch((e) => console.error('LoginLog create', e))
       res.status(401).json({
         error: { code: 'UNAUTHORIZED', message: 'Email 或密碼錯誤' },
       })
       return
     }
+
+    // 維護模式：僅平台管理員可登入，其餘回傳 503 系統維護中
+    const maintenanceOn = await isMaintenanceMode()
+    if (maintenanceOn && user.systemRole !== 'platform_admin') {
+      loginLogRepository
+        .create({
+          userId: user.id,
+          email: user.email,
+          success: false,
+          ipAddress: getClientIp(req),
+          userAgent: getClientUserAgent(req),
+          failureReason: 'maintenance_mode',
+        })
+        .catch((e) => console.error('LoginLog create', e))
+      res.status(503).json({
+        error: { code: 'MAINTENANCE', message: '系統維護中，請稍後再試。' },
+      })
+      return
+    }
+
+    loginLogRepository
+      .create({
+        userId: user.id,
+        email: user.email,
+        success: true,
+        ipAddress: getClientIp(req),
+        userAgent: getClientUserAgent(req),
+        failureReason: null,
+      })
+      .catch((e) => console.error('LoginLog create', e))
 
     const token = jwt.sign(
       {

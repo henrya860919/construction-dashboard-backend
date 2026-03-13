@@ -1,6 +1,8 @@
 import type { Request, Response } from 'express'
+import type { Prisma } from '@prisma/client'
 import { createProjectSchema, updateProjectSchema } from '../../schemas/project.js'
 import { parsePageLimit } from '../../shared/utils/pagination.js'
+import { recordAudit } from '../audit-log/audit-log.service.js'
 import { projectService } from './project.service.js'
 
 export const projectController = {
@@ -51,6 +53,12 @@ export const projectController = {
       return
     }
     const project = await projectService.create(parsed.data, user)
+    await recordAudit(req, {
+      action: 'project.create',
+      resourceType: 'project',
+      resourceId: project.id,
+      tenantId: project.tenantId,
+    })
     res.status(201).json({ data: project })
   },
 
@@ -72,7 +80,28 @@ export const projectController = {
       })
       return
     }
+    const beforeProject = await projectService.getById(id, user)
     const project = await projectService.update(id, parsed.data, user)
+    const auditFields = [
+      'name', 'description', 'code', 'status', 'designUnit', 'supervisionUnit',
+      'contractor', 'summary', 'benefits', 'siteManager', 'contactPhone', 'projectStaff',
+      'startDate', 'plannedEndDate', 'revisedEndDate',
+    ] as const
+    const toSnapshot = (p: typeof project) => {
+      const out: Record<string, unknown> = {}
+      for (const key of auditFields) {
+        const v = p[key]
+        out[key] = v instanceof Date ? v.toISOString() : v
+      }
+      return out
+    }
+    await recordAudit(req, {
+      action: 'project.update',
+      resourceType: 'project',
+      resourceId: project.id,
+      tenantId: project.tenantId,
+      details: { before: toSnapshot(beforeProject), after: toSnapshot(project) } as Prisma.InputJsonValue,
+    })
     res.status(200).json({ data: project })
   },
 }

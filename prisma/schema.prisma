@@ -47,6 +47,75 @@ model User {
   tenant        Tenant?         @relation(fields: [tenantId], references: [id], onDelete: SetNull)
   projectMembers ProjectMember[]
   attachments   Attachment[]
+  loginLogs     LoginLog[]
+  auditLogs     AuditLog[]
+}
+
+// ---------- 登入紀錄（平台監控用）----------
+model LoginLog {
+  id            String    @id @default(cuid())
+  userId        String?   @map("user_id")
+  email         String    @map("email")
+  success       Boolean   @map("success")
+  ipAddress     String?   @map("ip_address")
+  userAgent     String?   @map("user_agent")
+  failureReason String?   @map("failure_reason")
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt(sort: Desc)])
+  @@index([email])
+  @@index([success])
+  @@map("login_logs")
+}
+
+// ---------- 稽核日誌（平台監控用）----------
+model AuditLog {
+  id           String    @id @default(cuid())
+  userId       String?   @map("user_id")
+  action       String    @map("action")
+  resourceType String    @map("resource_type")
+  resourceId   String?   @map("resource_id")
+  tenantId     String?   @map("tenant_id")
+  details      Json?     @map("details")
+  ipAddress    String?   @map("ip_address")
+  userAgent    String?   @map("user_agent")
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt(sort: Desc)])
+  @@index([userId])
+  @@index([resourceType, resourceId])
+  @@index([tenantId])
+  @@index([action])
+  @@map("audit_logs")
+}
+
+// ---------- 平台公告（平台方發佈，可指定對象租戶或全平台）----------
+model PlatformAnnouncement {
+  id               String    @id @default(cuid())
+  title            String    @map("title")
+  body             String    @map("body")
+  publishedAt      DateTime? @map("published_at")  // 發佈時間，null 表示未發佈
+  expiresAt        DateTime? @map("expires_at")    // 下架時間，null 表示永不下架
+  targetTenantIds  Json?     @map("target_tenant_ids")  // 指定租戶 ID 陣列；null 或 [] 表示全平台
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  @@index([publishedAt, expiresAt])
+  @@map("platform_announcements")
+}
+
+// ---------- 平台設定（key-value，維護模式、功能開關等）----------
+model PlatformSetting {
+  id        String   @id @default(cuid())
+  key       String   @unique @map("key")
+  value     String   @map("value")   // 字串或 JSON 字串
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("platform_settings")
 }
 
 // ---------- 附件（檔案上傳 metadata，實體存儲存層）----------

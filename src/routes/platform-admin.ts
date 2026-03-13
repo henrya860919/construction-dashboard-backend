@@ -1,5 +1,5 @@
 /**
- * 多租後台 API：租戶、專案總覽、使用者總覽（僅 platform_admin）
+ * 多租後台 API：租戶、專案總覽、使用者總覽、監控、用量（僅 platform_admin）
  */
 import type { Prisma } from '@prisma/client'
 import { Router, type Request, type Response } from 'express'
@@ -9,8 +9,18 @@ import { createTenantSchema, updateTenantSchema } from '../schemas/tenant.js'
 import { resetPasswordSchema } from '../schemas/user.js'
 import { asyncHandler } from '../shared/utils/async-handler.js'
 import { AppError } from '../shared/errors.js'
+import { platformAdminMonitoringRouter } from './platform-admin-monitoring.js'
+import { platformAdminAnnouncementsRouter } from './platform-admin-announcements.js'
+import { recordAudit } from '../modules/audit-log/audit-log.service.js'
+import { fileRepository } from '../modules/file/file.repository.js'
+import { updatePlatformSettingsSchema } from '../schemas/platform-setting.js'
+import { storage } from '../lib/storage/index.js'
+import { clearMaintenanceCache } from '../middleware/maintenance.js'
 
 export const platformAdminRouter = Router()
+
+platformAdminRouter.use('/monitoring', platformAdminMonitoringRouter)
+platformAdminRouter.use('/announcements', platformAdminAnnouncementsRouter)
 
 function parseExpiresAt(value: string | null | undefined): Date | null {
   if (value == null || value === '') return null
@@ -100,6 +110,7 @@ platformAdminRouter.post(
         storageQuotaMb: storageQuotaMb ?? undefined,
       },
     })
+    await recordAudit(req, { action: 'tenant.create', resourceType: 'tenant', resourceId: tenant.id, tenantId: tenant.id })
     res.status(201).json({ data: tenant })
   })
 )
@@ -146,6 +157,7 @@ platformAdminRouter.patch(
         ...(storageQuotaMb !== undefined && { storageQuotaMb }),
       },
     })
+    await recordAudit(req, { action: 'tenant.update', resourceType: 'tenant', resourceId: tenant.id, tenantId: tenant.id })
     res.status(200).json({ data: tenant })
   })
 )
@@ -281,6 +293,142 @@ platformAdminRouter.patch(
       where: { id: userId },
       data: { passwordHash },
     })
+    await recordAudit(req, { action: 'user.password_reset', resourceType: 'user', resourceId: userId, tenantId: user.tenantId })
     res.status(200).json({ data: { ok: true } })
+  })
+)
+
+/** GET /api/v1/platform-admin/usage — 各租戶用量總覽 */
+platformAdminRouter.get(
+  '/usage',
+  asyncHandler(async (_req: Request, res: Response) => {
+    const tenants = await prisma.tenant.findMany({
+      orderBy: { name: 'asc' },
+      include: { _count: { select: { users: true, projects: true } } },
+    })
+    const usageList = await Promise.all(
+      tenants.map(async (t) => {
+        const storageBytes = await fileRepository.getTenantStorageUsageBytesSimple(t.id)
+        return {
+          id: t.id,
+          name: t.name,
+          slug: t.slug,
+          status: t.status,
+          userCount: t._count.users,
+          projectCount: t._count.projects,
+          storageUsageBytes: storageBytes,
+          userLimit: t.userLimit,
+          storageQuotaMb: t.storageQuotaMb,
+          expiresAt: t.expiresAt,
+        }
+      })
+    )
+    res.status(200).json({ data: usageList })
+  })
+)
+
+// ---------- 平台設定 ----------
+const SETTING_KEYS = {
+  MAINTENANCE_MODE: 'maintenance_mode',
+  DEFAULT_USER_LIMIT: 'default_user_limit',
+  DEFAULT_STORAGE_QUOTA_MB: 'default_storage_quota_mb',
+  DEFAULT_FILE_SIZE_LIMIT_MB: 'default_file_size_limit_mb',
+} as const
+
+async function getSetting(key: string): Promise<string | null> {
+  const row = await prisma.platformSetting.findUnique({ where: { key } })
+  return row?.value ?? null
+}
+
+async function setSetting(key: string, value: string): Promise<void> {
+  await prisma.platformSetting.upsert({
+    where: { key },
+    create: { key, value },
+    update: { value },
+  })
+}
+
+/** GET /api/v1/platform-admin/settings */
+platformAdminRouter.get(
+  '/settings',
+  asyncHandler(async (_req: Request, res: Response) => {
+    const [maintenanceMode, defaultUserLimit, defaultStorageQuotaMb, defaultFileSizeLimitMb] = await Promise.all([
+      getSetting(SETTING_KEYS.MAINTENANCE_MODE),
+      getSetting(SETTING_KEYS.DEFAULT_USER_LIMIT),
+      getSetting(SETTING_KEYS.DEFAULT_STORAGE_QUOTA_MB),
+      getSetting(SETTING_KEYS.DEFAULT_FILE_SIZE_LIMIT_MB),
+    ])
+    res.status(200).json({
+      data: {
+        maintenanceMode: maintenanceMode === 'true',
+        defaultUserLimit: defaultUserLimit != null ? Number(defaultUserLimit) : null,
+        defaultStorageQuotaMb: defaultStorageQuotaMb != null ? Number(defaultStorageQuotaMb) : null,
+        defaultFileSizeLimitMb: defaultFileSizeLimitMb != null ? Number(defaultFileSizeLimitMb) : null,
+      },
+    })
+  })
+)
+
+/** PATCH /api/v1/platform-admin/settings */
+platformAdminRouter.patch(
+  '/settings',
+  asyncHandler(async (req: Request, res: Response) => {
+    const parsed = updatePlatformSettingsSchema.safeParse(req.body)
+    if (!parsed.success) {
+      res.status(400).json({
+        error: { code: 'VALIDATION_ERROR', message: '欄位驗證失敗', details: parsed.error.flatten() },
+      })
+      return
+    }
+    const { maintenanceMode, defaultUserLimit, defaultStorageQuotaMb, defaultFileSizeLimitMb } = parsed.data
+    if (maintenanceMode !== undefined) {
+      await setSetting(SETTING_KEYS.MAINTENANCE_MODE, maintenanceMode ? 'true' : 'false')
+      clearMaintenanceCache()
+    }
+    if (defaultUserLimit !== undefined) await setSetting(SETTING_KEYS.DEFAULT_USER_LIMIT, String(defaultUserLimit ?? ''))
+    if (defaultStorageQuotaMb !== undefined) await setSetting(SETTING_KEYS.DEFAULT_STORAGE_QUOTA_MB, String(defaultStorageQuotaMb ?? ''))
+    if (defaultFileSizeLimitMb !== undefined) await setSetting(SETTING_KEYS.DEFAULT_FILE_SIZE_LIMIT_MB, String(defaultFileSizeLimitMb ?? ''))
+    const [mm, dul, dsq, dfs] = await Promise.all([
+      getSetting(SETTING_KEYS.MAINTENANCE_MODE),
+      getSetting(SETTING_KEYS.DEFAULT_USER_LIMIT),
+      getSetting(SETTING_KEYS.DEFAULT_STORAGE_QUOTA_MB),
+      getSetting(SETTING_KEYS.DEFAULT_FILE_SIZE_LIMIT_MB),
+    ])
+    res.status(200).json({
+      data: {
+        maintenanceMode: mm === 'true',
+        defaultUserLimit: dul != null && dul !== '' ? Number(dul) : null,
+        defaultStorageQuotaMb: dsq != null && dsq !== '' ? Number(dsq) : null,
+        defaultFileSizeLimitMb: dfs != null && dfs !== '' ? Number(dfs) : null,
+      },
+    })
+  })
+)
+
+/** GET /api/v1/platform-admin/system/status — 系統狀態（DB、儲存） */
+platformAdminRouter.get(
+  '/system/status',
+  asyncHandler(async (_req: Request, res: Response) => {
+    const dbStart = Date.now()
+    await prisma.$queryRaw`SELECT 1`
+    const dbMs = Date.now() - dbStart
+
+    let storageStatus = 'ok'
+    const storageStart = Date.now()
+    try {
+      await storage.upload(Buffer.from('health'), '_health_check')
+      await storage.delete('_health_check')
+    } catch (e) {
+      storageStatus = 'error'
+      console.error('Storage health check', e)
+    }
+    const storageMs = Date.now() - storageStart
+
+    res.status(200).json({
+      data: {
+        database: { status: 'ok', latencyMs: dbMs },
+        storage: { status: storageStatus, latencyMs: storageMs },
+      },
+    })
   })
 )
