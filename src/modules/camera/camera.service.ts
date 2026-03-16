@@ -34,6 +34,20 @@ const MAC_README = `Mac 安裝說明
 const MEDIAMTX_PUBLIC_HOST =
   process.env.MEDIAMTX_PUBLIC_HOST?.trim() || process.env.MEDIAMTX_WEBRTC_URL?.trim() || 'http://localhost:8889'
 
+/** Railway 等平台 TCP Proxy 會給 RTMP 專用 host:port（如 yamabiko.proxy.rlwy.net:17161），若設了則用於 go2rtc 推流 URL */
+const MEDIAMTX_RTMP_PUBLIC_HOST = process.env.MEDIAMTX_RTMP_PUBLIC_HOST?.trim()
+const MEDIAMTX_RTMP_PORT = process.env.MEDIAMTX_RTMP_PORT?.trim() || '1935'
+
+function getRtmpPublishHostAndPort(): { host: string; port: string } {
+  if (MEDIAMTX_RTMP_PUBLIC_HOST) {
+    const parts = MEDIAMTX_RTMP_PUBLIC_HOST.replace(/^https?:\/\//, '').split(':')
+    return { host: parts[0] ?? MEDIAMTX_RTMP_PUBLIC_HOST, port: parts[1] ?? MEDIAMTX_RTMP_PORT }
+  }
+  const base = MEDIAMTX_PUBLIC_HOST.replace(/\/$/, '')
+  const host = base.replace(/^https?:\/\//, '').replace(/:\d+$/, '')
+  return { host, port: MEDIAMTX_RTMP_PORT }
+}
+
 /** 攝影機連線狀態：依實際推流與歷史判斷 */
 export type CameraConnectionStatus = 'online' | 'offline' | 'not_configured'
 
@@ -398,8 +412,7 @@ export const cameraService = {
     if (camera.projectId !== projectId) throw new AppError(404, 'NOT_FOUND', '找不到該攝影機')
 
     const base = MEDIAMTX_PUBLIC_HOST.replace(/\/$/, '')
-    const hostForRtmp = base.replace(/^https?:\/\//, '').replace(/:\d+$/, '')
-    const rtmpPort = process.env.MEDIAMTX_RTMP_PORT?.trim() || '1935'
+    const { host: hostForRtmp, port: rtmpPort } = getRtmpPublishHostAndPort()
     const rtmpPublishUrl = `rtmp://${hostForRtmp}:${rtmpPort}/${camera.streamToken}`
 
     const yamlSnippet = `# go2rtc 推流設定（請加入 streams 區塊）
@@ -437,9 +450,7 @@ streams:
     const camera = await cameraRepository.findByIdWithSourceEnc(cameraId)
     if (!camera) throw new AppError(404, 'NOT_FOUND', '找不到該攝影機')
     if (camera.projectId !== projectId) throw new AppError(404, 'NOT_FOUND', '找不到該攝影機')
-    const base = MEDIAMTX_PUBLIC_HOST.replace(/\/$/, '')
-    const hostForRtmp = base.replace(/^https?:\/\//, '').replace(/:\d+$/, '')
-    const rtmpPort = process.env.MEDIAMTX_RTMP_PORT?.trim() || '1935'
+    const { host: hostForRtmp, port: rtmpPort } = getRtmpPublishHostAndPort()
     const rtmpPublishUrl = `rtmp://${hostForRtmp}:${rtmpPort}/${camera.streamToken}`
     const sourceUrl = camera.sourceUrlEnc ? encryption.decrypt(camera.sourceUrlEnc) : null
     return { streamToken: camera.streamToken, rtmpPublishUrl, sourceUrl }
@@ -479,9 +490,7 @@ ${streamLine}
    */
   async getInstallYamlContentForProject(projectId: string, userId: string, user: AuthUser): Promise<string> {
     await ensureUserCanAccessProject(projectId, userId, user.systemRole === 'platform_admin')
-    const base = MEDIAMTX_PUBLIC_HOST.replace(/\/$/, '')
-    const hostForRtmp = base.replace(/^https?:\/\//, '').replace(/:\d+$/, '')
-    const rtmpPort = process.env.MEDIAMTX_RTMP_PORT?.trim() || '1935'
+    const { host: hostForRtmp, port: rtmpPort } = getRtmpPublishHostAndPort()
     const rows = await cameraRepository.findByProjectIdWithSourceEnc(projectId)
     if (rows.length === 0) {
       return `# go2rtc 設定檔 - 此專案尚無攝影機
