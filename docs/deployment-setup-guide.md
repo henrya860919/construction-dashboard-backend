@@ -162,7 +162,53 @@
 
 ---
 
-## 六、相關文件
+## 六、以後怎麼部署（日常發布流程）
+
+之後要上線新功能或修復時，依下列流程操作即可。
+
+### 6.1 開發與合併
+
+1. 在 **main**（或 feature branch）開發、測試。
+2. 確認沒問題後，**merge 到 prod 分支**（例如：`git checkout prod && git merge main && git push origin prod`）。
+
+### 6.2 後端（Railway）
+
+- **程式碼**：push 到 **prod** 後，Railway 會自動偵測並重新 **build + deploy**，無須手動觸發。
+- **資料庫 schema 變更**（有改 Prisma、有新增 migration 時）：
+  1. 在本機後端專案目錄，用 Railway **對外** DATABASE_URL 跑一次 migration：
+     ```bash
+     cd construction-dashboard-backend
+     DATABASE_URL="你的Railway對外連線字串" npx prisma migrate deploy
+     ```
+  2. 或使用 Railway CLI：先 `railway link` 選對專案與環境，再 `railway run npx prisma migrate deploy`（若 DB 用內部網址，需在 Railway 遠端跑；本機跑請用對外 URL）。
+- **Seed**：只有要重灌種子資料時才跑，同上，用對外 DATABASE_URL 或 `railway run npm run db:seed`（需在專案目錄下）。
+
+### 6.3 前端（Vercel）
+
+- **程式碼**：push 到 **prod** 後，Vercel 會自動 **build + deploy**。
+- **環境變數**：若曾改 `VITE_API_URL` 等，在 Vercel 專案 **Settings → Environment Variables** 改完後，需 **重新 Deploy** 才會生效（建置時才會帶入）。
+
+### 6.4 流程總覽（一圖流）
+
+```
+本機開發 (main) → 合併到 prod → git push origin prod
+                                        │
+                    ┌───────────────────┴───────────────────┐
+                    ▼                                       ▼
+            Railway 自動 build + deploy              Vercel 自動 build + deploy
+            （有 migration 時需手動跑 migrate deploy）
+```
+
+### 6.5 檢查清單（每次要上線前）
+
+- [ ] 已 merge 到 **prod** 並 push。
+- [ ] 若有改 Prisma schema，已產生 migration 並在正式 DB 跑過 `prisma migrate deploy`。
+- [ ] 後端／前端環境變數無誤（Railway Variables、Vercel Environment Variables）。
+- [ ] 部署完成後到正式前端網址驗收（登入、主要功能點一輪）。
+
+---
+
+## 七、相關文件
 
 - **production-environment-planning.md**：正式環境整體規劃、費用、環境變數總表。
 - **production-release-checklist.md**：發布前檢查、攝影機功能與 mediamtx 部署細節。
