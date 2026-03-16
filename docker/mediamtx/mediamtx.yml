@@ -1,0 +1,24 @@
+# 僅覆寫：啟用 Control API（port 9997），並允許從 Railway 內網（Backend）呼叫
+# 其餘設定沿用映像內建預設（WebRTC 8889、RTMP 1935 等）
+api: true
+apiAddress: ":9997"
+
+# 允許從非 localhost（如 Backend 容器）呼叫 API；保留預設的 publish/read/playback 使用者
+authInternalUsers:
+  - user: any
+    pass:
+    ips: []
+    permissions:
+      - action: publish
+        path:
+      - action: read
+        path:
+      - action: playback
+        path:
+  - user: any
+    pass:
+    ips: []
+    permissions:
+      - action: api
+      - action: metrics
+      - action: pprof
