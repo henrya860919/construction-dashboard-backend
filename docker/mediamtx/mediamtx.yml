@@ -3,6 +3,9 @@
 api: true
 apiAddress: ":9997"
 
+# 前端在 Vercel（不同網域），需允許跨域才能用 WebRTC/WHEP 播放
+webrtcAllowOrigins: ['*']
+
 # 允許從非 localhost（如 Backend 容器）呼叫 API；保留預設的 publish/read/playback 使用者
 authInternalUsers:
   - user: any
