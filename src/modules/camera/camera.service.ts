@@ -354,7 +354,10 @@ export const cameraService = {
     if (!camera) throw new AppError(404, 'NOT_FOUND', '找不到該攝影機')
     if (camera.projectId !== projectId) throw new AppError(404, 'NOT_FOUND', '找不到該攝影機')
 
-    await mediamtx.removePath(camera.streamToken)
+    const removed = await mediamtx.removePath(camera.streamToken)
+    if (!removed.ok) {
+      throw new AppError(503, 'SERVICE_UNAVAILABLE', removed.error ?? '串流服務暫時無法連線，無法從 mediamtx 移除路徑')
+    }
     await cameraRepository.delete(cameraId)
   },
 
