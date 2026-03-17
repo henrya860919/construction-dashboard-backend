@@ -6,4 +6,4 @@ FROM bluenviron/mediamtx:latest
 # 覆寫設定：啟用 API 9997，並允許內網呼叫（Backend 用 mediamtx.railway.internal:9997）
 COPY mediamtx.yml /mediamtx.yml
 
-EXPOSE 9997 8889 8554
+EXPOSE 9997 8889 1935

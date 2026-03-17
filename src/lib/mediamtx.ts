@@ -1,7 +1,11 @@
 /**
  * mediamtx REST API 客戶端（僅供 Backend 在伺服器本機呼叫，9997 不對外開放）。
+ * 設有逾時，避免 mediamtx 無回應時拖慢 cameras list/getById 等 API。
  */
 const MEDIAMTX_API_URL = process.env.MEDIAMTX_API_URL?.trim() || 'http://127.0.0.1:9997'
+
+/** 逾時毫秒數；逾時後 fetch 中斷，cameras API 仍會回傳（connectionStatus 依 lastStreamAt 等判斷） */
+const MEDIAMTX_API_TIMEOUT_MS = Number(process.env.MEDIAMTX_API_TIMEOUT_MS) || 5_000
 
 const STREAM_SERVICE_UNREACHABLE = '串流服務無法連線，請確認 mediamtx 已啟動（port 9997）'
 
@@ -11,10 +15,13 @@ async function request<T>(
   body?: object
 ): Promise<{ status: number; data?: T; error?: string }> {
   const url = `${MEDIAMTX_API_URL.replace(/\/$/, '')}${path}`
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), MEDIAMTX_API_TIMEOUT_MS)
   let res: Response
   try {
     res = await fetch(url, {
       method,
+      signal: controller.signal,
       headers: body ? { 'Content-Type': 'application/json' } : undefined,
       body: body ? JSON.stringify(body) : undefined,
     })
@@ -22,6 +29,8 @@ async function request<T>(
     const msg = e instanceof Error ? e.message : String(e)
     console.error('[mediamtx] 連線失敗:', msg)
     return { status: 0, error: STREAM_SERVICE_UNREACHABLE }
+  } finally {
+    clearTimeout(timeoutId)
   }
   const text = await res.text()
   let data: T | undefined

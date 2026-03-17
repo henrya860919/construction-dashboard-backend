@@ -34,18 +34,22 @@ const MAC_README = `Mac 安裝說明
 const MEDIAMTX_PUBLIC_HOST =
   process.env.MEDIAMTX_PUBLIC_HOST?.trim() || process.env.MEDIAMTX_WEBRTC_URL?.trim() || 'http://localhost:8889'
 
-/** Railway 等平台 TCP Proxy 會給 RTSP 專用 host:port（如 xxx.proxy.rlwy.net:17162），若設了則用於 go2rtc 推流 URL；改 RTSP 可避免雲端 RTMP AVCC 解析錯誤 */
-const MEDIAMTX_RTSP_PUBLIC_HOST = process.env.MEDIAMTX_RTSP_PUBLIC_HOST?.trim()
-const MEDIAMTX_RTSP_PORT = process.env.MEDIAMTX_RTSP_PORT?.trim() || '8554'
+/**
+ * go2rtc publish 不支援外網 RTSP（會報 unsupported scheme），改用 RTMP 推流。
+ * Railway 等平台需在環境變數設定 MEDIAMTX_RTMP_PUBLIC_URL。
+ * 例如：rtmp://xxx.proxy.rlwy.net:1935
+ *
+ * AVCC 解析錯誤（access unit size too big）由 ffmpeg source 解決，與推流協議無關。
+ */
+const MEDIAMTX_RTMP_PUBLIC_URL = process.env.MEDIAMTX_RTMP_PUBLIC_URL?.trim()
 
-function getRtspPublishHostAndPort(): { host: string; port: string } {
-  if (MEDIAMTX_RTSP_PUBLIC_HOST) {
-    const parts = MEDIAMTX_RTSP_PUBLIC_HOST.replace(/^https?:\/\//, '').split(':')
-    return { host: parts[0] ?? MEDIAMTX_RTSP_PUBLIC_HOST, port: parts[1] ?? MEDIAMTX_RTSP_PORT }
+function getRtmpPublishUrl(streamToken: string): string {
+  if (MEDIAMTX_RTMP_PUBLIC_URL) {
+    const base = MEDIAMTX_RTMP_PUBLIC_URL.replace(/\/$/, '')
+    return `${base}/${streamToken}`
   }
-  const base = MEDIAMTX_PUBLIC_HOST.replace(/\/$/, '')
-  const host = base.replace(/^https?:\/\//, '').replace(/:\d+$/, '')
-  return { host, port: MEDIAMTX_RTSP_PORT }
+  // 本機 fallback
+  return `rtmp://localhost:1935/${streamToken}`
 }
 
 /** 攝影機連線狀態：依實際推流與歷史判斷 */
@@ -412,27 +416,28 @@ export const cameraService = {
     if (camera.projectId !== projectId) throw new AppError(404, 'NOT_FOUND', '找不到該攝影機')
 
     const base = MEDIAMTX_PUBLIC_HOST.replace(/\/$/, '')
-    const { host: hostForRtsp, port: rtspPort } = getRtspPublishHostAndPort()
-    const rtspPublishUrl = `rtsp://${hostForRtsp}:${rtspPort}/${camera.streamToken}`
+    const rtmpPublishUrl = getRtmpPublishUrl(camera.streamToken)
 
     const yamlSnippet = `# go2rtc 推流設定（請加入 streams 區塊）
-# publish 的 key 必須與 streams 的 stream 名稱相同；改為 RTSP 推流可避免雲端 RTMP AVCC 錯誤
+# publish 的 key 必須與 streams 的 stream 名稱相同
+# 使用 RTMP 推流（go2rtc publish 不支援外網 RTSP）
+# 使用 ffmpeg: source 可避免 AVCC 解析錯誤
 publish:
   ${camera.streamToken}:
-    - ${rtspPublishUrl}
+    - ${rtmpPublishUrl}
 
 streams:
   ${camera.streamToken}:
-    # 請改為現場攝影機的 RTSP 網址，例如：
-    # - rtsp://使用者:密碼@192.168.1.100:554/stream1
-    - rtsp://YOUR_CAMERA_IP:554/stream1
+    # 請改為現場攝影機的 RTSP 網址
+    # ffmpeg: 前綴會重新封裝 H264，避免 AVCC 錯誤
+    - ffmpeg:rtsp://YOUR_CAMERA_IP:554/stream1#video=h264#audio=aac
 `
 
     return {
       streamToken: camera.streamToken,
-      mediamtxHost: hostForRtsp,
+      mediamtxHost: base,
       mediamtxWebRtcUrl: `${base}/${camera.streamToken}`,
-      rtspPublishUrl,
+      rtmpPublishUrl,
       go2rtcYamlSnippet: yamlSnippet,
     }
   },
@@ -445,20 +450,19 @@ streams:
     projectId: string,
     userId: string,
     user: AuthUser
-  ): Promise<{ streamToken: string; rtspPublishUrl: string; sourceUrl: string | null }> {
+  ): Promise<{ streamToken: string; rtmpPublishUrl: string; sourceUrl: string | null }> {
     await ensureUserCanAccessProject(projectId, userId, user.systemRole === 'platform_admin')
     const camera = await cameraRepository.findByIdWithSourceEnc(cameraId)
     if (!camera) throw new AppError(404, 'NOT_FOUND', '找不到該攝影機')
     if (camera.projectId !== projectId) throw new AppError(404, 'NOT_FOUND', '找不到該攝影機')
-    const { host: hostForRtsp, port: rtspPort } = getRtspPublishHostAndPort()
-    const rtspPublishUrl = `rtsp://${hostForRtsp}:${rtspPort}/${camera.streamToken}`
+    const rtmpPublishUrl = getRtmpPublishUrl(camera.streamToken)
     const sourceUrl = camera.sourceUrlEnc ? encryption.decrypt(camera.sourceUrlEnc) : null
-    return { streamToken: camera.streamToken, rtspPublishUrl, sourceUrl }
+    return { streamToken: camera.streamToken, rtmpPublishUrl, sourceUrl }
   },
 
-  /** 產出完整 go2rtc.yaml（若已填設備 RTSP 則預填好，下載即可用）；推流改為 RTSP 可避免雲端 RTMP AVCC 錯誤 */
+  /** 產出完整 go2rtc.yaml（若已填設備 RTSP 則預填好，下載即可用）；publish 用 RTMP，ffmpeg: source 避免 AVCC 錯誤 */
   async getInstallYamlContent(cameraId: string, projectId: string, userId: string, user: AuthUser): Promise<string> {
-    const { streamToken, rtspPublishUrl, sourceUrl } = await this.getInstallDataWithSourceUrl(
+    const { streamToken, rtmpPublishUrl, sourceUrl } = await this.getInstallDataWithSourceUrl(
       cameraId,
       projectId,
       userId,
@@ -466,17 +470,18 @@ streams:
     )
     const streamLine = sourceUrl?.trim()
       ? `    - ffmpeg:${sourceUrl.trim().replace(/\n/g, ' ')}#video=h264#audio=aac`
-      : '    - rtsp://YOUR_CAMERA_IP:554/stream1  # 請改為現場攝影機 RTSP，推流建議改為 ffmpeg:rtsp://...#video=h264#audio=aac'
+      : '    - ffmpeg:rtsp://YOUR_CAMERA_IP:554/stream1#video=h264#audio=aac  # 請改為現場攝影機 RTSP'
     return `# go2rtc 設定檔 - ${streamToken}
 # 下載後與本資料夾內的執行腳本一起使用，執行腳本會自動下載 go2rtc 並啟動
 # 若與 mediamtx 同機，改用 8556 避免與 mediamtx 的 RTSP 埠 8554 衝突
 rtsp:
   listen: ":8556"
 
-# publish 的 key 必須與 streams 的 stream 名稱相同；使用 RTSP 推流至 mediamtx（避免雲端 RTMP AVCC 錯誤）
+# publish 使用 RTMP（go2rtc publish 不支援外網 RTSP）
+# ffmpeg: source 會重新封裝 H264，避免 AVCC 解析錯誤
 publish:
   ${streamToken}:
-    - ${rtspPublishUrl}
+    - ${rtmpPublishUrl}
 
 streams:
   ${streamToken}:
@@ -489,7 +494,6 @@ ${streamLine}
    */
   async getInstallYamlContentForProject(projectId: string, userId: string, user: AuthUser): Promise<string> {
     await ensureUserCanAccessProject(projectId, userId, user.systemRole === 'platform_admin')
-    const { host: hostForRtsp, port: rtspPort } = getRtspPublishHostAndPort()
     const rows = await cameraRepository.findByProjectIdWithSourceEnc(projectId)
     if (rows.length === 0) {
       return `# go2rtc 設定檔 - 此專案尚無攝影機
@@ -504,12 +508,12 @@ streams: {}
     const publishLines: string[] = []
     const streamLines: string[] = []
     for (const row of rows) {
-      const rtspPublishUrl = `rtsp://${hostForRtsp}:${rtspPort}/${row.streamToken}`
-      publishLines.push(`  ${row.streamToken}:\n    - ${rtspPublishUrl}`)
+      const rtmpPublishUrl = getRtmpPublishUrl(row.streamToken)
+      publishLines.push(`  ${row.streamToken}:\n    - ${rtmpPublishUrl}`)
       const sourceUrl = row.sourceUrlEnc ? encryption.decrypt(row.sourceUrlEnc) : null
       const streamLine = sourceUrl?.trim()
         ? `    - ffmpeg:${sourceUrl.trim().replace(/\n/g, ' ')}#video=h264#audio=aac`
-        : '    - rtsp://YOUR_CAMERA_IP:554/stream1  # 請改為此台攝影機的 RTSP，推流建議改為 ffmpeg:rtsp://...#video=h264#audio=aac'
+        : '    - ffmpeg:rtsp://YOUR_CAMERA_IP:554/stream1#video=h264#audio=aac  # 請改為此台攝影機 RTSP'
       streamLines.push(`  ${row.streamToken}:\n${streamLine}`)
     }
     return `# go2rtc 設定檔 - 本專案 ${rows.length} 台攝影機
@@ -518,7 +522,7 @@ streams: {}
 rtsp:
   listen: ":8556"
 
-# publish 的 key 必須與 streams 的 stream 名稱相同；使用 RTSP 推流至 mediamtx
+# publish 使用 RTMP（go2rtc publish 不支援外網 RTSP）；ffmpeg: source 避免 AVCC 錯誤
 publish:
 ${publishLines.join('\n')}
 
