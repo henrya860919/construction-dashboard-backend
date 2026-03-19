@@ -15,6 +15,7 @@ import { projectMemberController } from '../modules/project-member/index.js'
 import { defectImprovementsRouter } from './defect-improvements.js'
 import { repairRequestsRouter } from './repair-requests.js'
 import { projectSelfInspectionsRouter } from './project-self-inspections.js'
+import { drawingNodesRouter } from './drawing-nodes.js'
 
 export const projectsRouter = Router()
 
@@ -35,6 +36,9 @@ projectsRouter.use('/:projectId/repair-requests', repairRequestsRouter)
 
 /** 自主查驗（專案內：樣板列表、填寫紀錄） */
 projectsRouter.use('/:projectId/self-inspections', projectSelfInspectionsRouter)
+
+/** 圖說管理（樹狀分類／圖說項、檔案版本） */
+projectsRouter.use('/:projectId/drawing-nodes', drawingNodesRouter)
 
 /** WBS 工作分解結構（列表、新增、編輯、刪除、拖移） */
 projectsRouter.use('/:projectId/wbs', wbsRouter)

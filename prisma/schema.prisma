@@ -345,6 +345,28 @@ model Project {
   repairRequests                        RepairRequest[]
   selfInspectionRecords                 SelfInspectionRecord[]
   projectSelfInspectionTemplateLinks    ProjectSelfInspectionTemplateLink[]
+  drawingNodes                          DrawingNode[]
+}
+
+// ---------- 圖說管理（專案內樹狀：folder=分類、leaf=圖說項；版本用 Attachment category=drawing_revision, businessId=leafId）----------
+model DrawingNode {
+  id        String   @id @default(cuid())
+  projectId String   @map("project_id")
+  parentId  String?  @map("parent_id")
+  /// folder | leaf（僅 leaf 可上傳檔案／版本鏈）
+  kind      String   @map("kind")
+  name      String   @map("name")
+  sortOrder Int      @default(0) @map("sort_order")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  project  Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  parent   DrawingNode?    @relation("DrawingTree", fields: [parentId], references: [id], onDelete: Cascade)
+  children DrawingNode[]   @relation("DrawingTree")
+
+  @@index([projectId])
+  @@index([parentId])
+  @@map("drawing_nodes")
 }
 
 // ---------- WBS 工作分解結構（專案內樹狀，可拖移排序）----------
