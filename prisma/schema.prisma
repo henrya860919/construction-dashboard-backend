@@ -57,6 +57,7 @@ model User {
   announcementReads AnnouncementRead[]
   photoFavorites    UserPhotoFavorite[]
   assignedIssueRisks ProjectIssueRisk[]
+  defectExecutionRecords DefectExecutionRecord[]
 }
 
 // ---------- 登入紀錄（平台監控用）----------
@@ -243,6 +244,7 @@ model Project {
   wbsNodes            WbsNode[]
   issueRisks          ProjectIssueRisk[]
   resources           ProjectResource[]
+  defectImprovements  DefectImprovement[]
 }
 
 // ---------- WBS 工作分解結構（專案內樹狀，可拖移排序）----------
@@ -468,4 +470,40 @@ model Camera {
   @@index([tenantId])
   @@index([streamToken])
   @@map("cameras")
+}
+
+// ---------- 缺失改善（手機／現場：問題說明、發現人、優先度、樓層、位置、狀態、照片）----------
+model DefectImprovement {
+  id           String   @id @default(cuid())
+  projectId    String   @map("project_id")
+  description  String   @map("description")   // 問題說明
+  discoveredBy String   @map("discovered_by") // 發現人（姓名）
+  priority     String   @default("medium") @map("priority")  // low | medium | high
+  floor        String?  @map("floor")         // 樓層
+  location     String?  @map("location")      // 位置
+  status       String   @default("in_progress") @map("status") // in_progress | completed
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  project  Project                 @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  records  DefectExecutionRecord[]
+
+  @@index([projectId])
+  @@index([projectId, status])
+  @@map("defect_improvements")
+}
+
+// ---------- 缺失改善執行紀錄（歷程：內容、紀錄人、時間；照片用 Attachment businessId=id, category=defect_record）----------
+model DefectExecutionRecord {
+  id          String   @id @default(cuid())
+  defectId    String   @map("defect_id")
+  content     String   @map("content")       // 執行紀錄內容
+  recordedById String? @map("recorded_by_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  defect   DefectImprovement @relation(fields: [defectId], references: [id], onDelete: Cascade)
+  recordedBy User?           @relation(fields: [recordedById], references: [id], onDelete: SetNull)
+
+  @@index([defectId])
+  @@map("defect_execution_records")
 }

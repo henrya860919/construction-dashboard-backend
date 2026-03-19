@@ -12,6 +12,7 @@ import { albumsRouter } from './albums.js'
 import { photoFavoriteController } from '../modules/photo-favorite/index.js'
 import { cameraController } from '../modules/camera/index.js'
 import { projectMemberController } from '../modules/project-member/index.js'
+import { defectImprovementsRouter } from './defect-improvements.js'
 
 export const projectsRouter = Router()
 
@@ -23,6 +24,9 @@ projectsRouter.post('/', asyncHandler(projectController.create.bind(projectContr
 
 /** 工期調整（須在 /:id 之前掛載，否則會被 :id 吃掉） */
 projectsRouter.use('/:projectId/schedule-adjustments', scheduleAdjustmentsRouter)
+
+/** 缺失改善（手機／現場：列表、詳情、執行紀錄） */
+projectsRouter.use('/:projectId/defect-improvements', defectImprovementsRouter)
 
 /** WBS 工作分解結構（列表、新增、編輯、刪除、拖移） */
 projectsRouter.use('/:projectId/wbs', wbsRouter)

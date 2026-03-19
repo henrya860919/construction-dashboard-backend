@@ -11,7 +11,8 @@ export function getNetworkIPs(): string[] {
     const addresses = interfaces[_name]
     if (addresses) {
       for (const address of addresses) {
-        const isIPv4 = String(address.family) === 'IPv4' || address.family === 4
+        const family = address.family
+        const isIPv4 = family === 'IPv4' || (typeof family === 'number' && family === 4)
         if (isIPv4 && !address.internal) {
           ips.push(address.address)
         }
