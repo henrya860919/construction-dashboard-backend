@@ -36,7 +36,7 @@ const loginRateLimiter = rateLimit({
   legacyHeaders: false,
   handler: (_req, res) => {
     res.status(429).json({
-      error: { code: 'TOO_MANY_REQUESTS', message: '登入嘗試次數過多，請稍後再試' },
+      error: { code: 'TOO_MANY_REQUESTS', message: '登入嘗試次數過多，請於 15 分鐘後再試' },
     })
   },
 })
