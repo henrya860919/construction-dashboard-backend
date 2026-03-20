@@ -1,0 +1,88 @@
+# 專案內功能模組權限（RBAC）— 開發者指南
+
+專案內存取由兩層組成：
+
+1. **專案准入**：`assertCanAccessProject`（`src/shared/project-access.ts`）— 是否為專案活躍成員／租戶管理員／平台管理員。
+2. **模組動作**：`assertProjectModuleAction(user, projectId, moduleId, action)`（`src/modules/project-permission/project-permission.service.ts`）— `platform_admin`／`tenant_admin` 略過細粒度檢查；`project_user` 依 `project_member_permissions` 四個 boolean。
+
+`action`：`create` | `read` | `update` | `delete`，對應資料列上的 `canCreate`／`canRead`／`canUpdate`／`canDelete`。
+
+---
+
+## 新增一個「可進權限矩陣」的功能模組（Checklist）
+
+請**依序**完成，避免漏接 API、矩陣或側欄。
+
+| 步驟 | 位置 | 說明 |
+|------|------|------|
+| 1 | `src/constants/permission-modules.ts`（後端） | 在 `PERMISSION_MODULES` 陣列加入新 `moduleId`（點號命名，如 `construction.xxx`）。 |
+| 2 | `src/constants/permission-modules.ts`（前端） | **同一順序、同一清單**；更新 `NAV_PATH_PERMISSION_MODULE`（專案內 path 後綴 → 模組）、`PERMISSION_MODULE_LABELS`（後台／矩陣顯示名）。 |
+| 3 | Prisma migration | 為既有 `tenant_permission_templates`／`project_member_permissions` **補列**新模組（可複製鄰近模組旗標，見 `20260322120000_add_project_members_module`）；勿只改常數不補 DB。 |
+| 4 | `src/schemas/project-permission.ts` | `replacePermissionModulesSchema` 由 `PERMISSION_MODULES` 驅動，通常**不需手改**，確認編譯通過即可。 |
+| 5 | `preset-roles.ts` | 若 preset 需特例，更新 `PRESET_TEMPLATES`／`defaultFlagsByProjectRole` 語意。 |
+| 6 | 後端業務 Service | 每個對外方法開頭：`await assertProjectModuleAction(user, projectId, '<moduleId>', '<action>')`（已准入則不重複 `assertCanAccessProject`，`assertProjectModuleAction` 內含准入）。 |
+| 7 | `docs/backend-prisma-api.md` | 簡述新模組守護的 API（若屬 3.7 範圍）。 |
+| 8 | 前端路由 | `useProjectRoutePermissionGuard` 已依 `NAV_PATH_PERMISSION_MODULE` 擋無 `read` 者；新 path **必須**掛上對應鍵。 |
+| 9 | `navigation.ts` | 側欄／Layer2／Layer3 新連結的 `pathSuffix` 與步驟 2 一致。 |
+| 10 | 頁面與按鈕 | 使用 `useProjectPermission(projectId)` 的 `can(moduleId, action)`，與後端動作一致；勿只用 `tenant_admin` 判斷。 |
+
+---
+
+## 動作對照（建議約定）
+
+| UI／業務 | 建議 `action` |
+|----------|----------------|
+| 列表、詳情、匯出唯讀 | `read` |
+| 新增、上傳、建立、開「可選清單」供建立 | `create` |
+| 修改欄位、狀態、批次變更（非刪除） | `update` |
+| 刪除、移出、作廢 | `delete` |
+
+**範例 — `project.members`：**
+
+- 成員列表 → `read`
+- 可加入名單、新增成員 → `create`
+- 停用／啟用 → `update`
+- 移出專案 → `delete`
+- 專案內「成員模組權限覆寫」（`.../members/:userId/permissions`）→ **僅** `tenant_admin`／`platform_admin`，**不**使用 `assertProjectModuleAction`。
+
+---
+
+## 檔案 API：`category` → 模組
+
+`file.service.ts` 的 `ensureProjectFile`（上傳／列表／讀取／刪除附件）依 `Attachment.category` 對應：
+
+| `category` | 權限模組 |
+|------------|----------|
+| `drawing_revision` | `project.drawings` |
+| `photo`（圖庫／影像管理，常數 `FILE_CATEGORY_PHOTO`） | `construction.photo` |
+| 其他或 `null` | `construction.upload` |
+
+---
+
+## 前端一句話模式
+
+```ts
+const projectId = computed(() => (route.params.projectId as string) ?? '')
+const { can, canReadPath } = useProjectPermission(projectId)
+
+// 依「頁」：與側欄相同 read 模組
+canReadPath('/construction/defects')
+
+// 依「模組 + 動作」（按鈕、區塊）
+can('construction.defect', 'create')
+```
+
+`platform_admin`／`tenant_admin` 在 `useProjectPermission` 內視為全 `true`，與後端略過規則一致。
+
+---
+
+## 相關檔案索引
+
+| 用途 | 檔案 |
+|------|------|
+| 模組 id 清單 | 後端／前端 `src/constants/permission-modules.ts` |
+| 後端檢查 | `project-permission.service.ts` → `assertProjectModuleAction` |
+| 專案准入 | `shared/project-access.ts` → `assertCanAccessProject` |
+| 租戶範本 API | `admin` 路由 + `project-permission` module |
+| 專案覆寫 API | `projects/:projectId/members/:userId/permissions` |
+| 規劃摘要 | `docs/permission-architecture-implementation-plan.md` |

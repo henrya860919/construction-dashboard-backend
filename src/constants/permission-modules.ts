@@ -3,6 +3,7 @@
  */
 export const PERMISSION_MODULES = [
   'project.overview',
+  'project.members',
   'project.wbs',
   'project.gantt',
   'project.resource',

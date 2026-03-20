@@ -5,7 +5,10 @@ import { projectMemberRepository, type ProjectMemberItem } from './project-membe
 import { projectRepository } from '../project/project.repository.js'
 import type { AddProjectMemberBody } from '../../schemas/project-member.js'
 import { projectPermissionRepository } from '../project-permission/project-permission.repository.js'
-import { syncProjectMemberPermissionsFromTemplate } from '../project-permission/project-permission.service.js'
+import {
+  assertProjectModuleAction,
+  syncProjectMemberPermissionsFromTemplate,
+} from '../project-permission/project-permission.service.js'
 
 type AuthUser = {
   id: string
@@ -13,42 +16,14 @@ type AuthUser = {
   tenantId: string | null
 }
 
-/** 可檢視專案成員：platform_admin、同租戶 tenant_admin、或為該專案成員（且 status=active） */
-async function ensureCanAccessProjectMembers(projectId: string, user: AuthUser): Promise<void> {
-  if (user.systemRole === 'platform_admin') return
-  const project = await projectRepository.findById(projectId)
-  if (!project) throw new AppError(404, 'NOT_FOUND', '找不到該專案')
-  if (user.systemRole === 'tenant_admin' && project.tenantId === user.tenantId) return
-  const member = await prisma.projectMember.findFirst({
-    where: { projectId, userId: user.id, ...notDeleted },
-    select: { status: true },
-  })
-  if (!member || member.status !== 'active') {
-    throw new AppError(403, 'FORBIDDEN', '非專案成員或已停用，無法檢視專案成員')
-  }
-}
-
-/** 可新增/移除專案成員：platform_admin 或同租戶的 tenant_admin */
-async function ensureCanManageProjectMembers(projectId: string, user: AuthUser): Promise<void> {
-  if (user.systemRole === 'platform_admin') return
-  if (user.systemRole !== 'tenant_admin' || !user.tenantId) {
-    throw new AppError(403, 'FORBIDDEN', '僅租戶管理員或平台管理員可管理專案成員')
-  }
-  const project = await projectRepository.findById(projectId)
-  if (!project) throw new AppError(404, 'NOT_FOUND', '找不到該專案')
-  if (project.tenantId !== user.tenantId) {
-    throw new AppError(403, 'FORBIDDEN', '僅能管理同租戶專案的成員')
-  }
-}
-
 export const projectMemberService = {
   async list(projectId: string, user: AuthUser): Promise<ProjectMemberItem[]> {
-    await ensureCanAccessProjectMembers(projectId, user)
+    await assertProjectModuleAction(user, projectId, 'project.members', 'read')
     return projectMemberRepository.findManyByProjectId(projectId)
   },
 
   async listAvailable(projectId: string, user: AuthUser, limit = 100): Promise<{ id: string; email: string; name: string | null }[]> {
-    await ensureCanManageProjectMembers(projectId, user)
+    await assertProjectModuleAction(user, projectId, 'project.members', 'create')
     const project = await projectRepository.findById(projectId)
     if (!project) throw new AppError(404, 'NOT_FOUND', '找不到該專案')
     if (!project.tenantId) {
@@ -58,7 +33,7 @@ export const projectMemberService = {
   },
 
   async add(projectId: string, data: AddProjectMemberBody, user: AuthUser): Promise<ProjectMemberItem> {
-    await ensureCanManageProjectMembers(projectId, user)
+    await assertProjectModuleAction(user, projectId, 'project.members', 'create')
     const project = await projectRepository.findById(projectId)
     if (!project) throw new AppError(404, 'NOT_FOUND', '找不到該專案')
     if (!project.tenantId) {
@@ -95,7 +70,7 @@ export const projectMemberService = {
   },
 
   async remove(projectId: string, userId: string, user: AuthUser): Promise<void> {
-    await ensureCanManageProjectMembers(projectId, user)
+    await assertProjectModuleAction(user, projectId, 'project.members', 'delete')
     const exists = await projectMemberRepository.exists(projectId, userId)
     if (!exists) throw new AppError(404, 'NOT_FOUND', '該使用者不是此專案成員')
     await projectPermissionRepository.deleteManyProjectUser(projectId, userId)
@@ -108,7 +83,7 @@ export const projectMemberService = {
     status: 'active' | 'suspended',
     user: AuthUser
   ): Promise<ProjectMemberItem> {
-    await ensureCanManageProjectMembers(projectId, user)
+    await assertProjectModuleAction(user, projectId, 'project.members', 'update')
     const exists = await projectMemberRepository.exists(projectId, userId)
     if (!exists) throw new AppError(404, 'NOT_FOUND', '該使用者不是此專案成員')
     const updated = await projectMemberRepository.updateStatus(projectId, userId, status)

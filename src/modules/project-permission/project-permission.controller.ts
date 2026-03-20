@@ -30,8 +30,8 @@ export const projectPermissionController = {
     const user = actor(req)
     const projectId = req.params.projectId as string
     const targetUserId = req.params.userId as string
-    const modules = await listProjectMemberOverrides(user, projectId, targetUserId)
-    res.status(200).json({ data: { modules } })
+    const payload = await listProjectMemberOverrides(user, projectId, targetUserId)
+    res.status(200).json({ data: payload })
   },
 
   async replaceMemberProjectPermissions(req: Request, res: Response) {
@@ -49,16 +49,16 @@ export const projectPermissionController = {
       })
       return
     }
-    const modules = await replaceProjectMemberOverrides(user, projectId, targetUserId, parsed.data.modules)
-    res.status(200).json({ data: { modules } })
+    const payload = await replaceProjectMemberOverrides(user, projectId, targetUserId, parsed.data.modules)
+    res.status(200).json({ data: payload })
   },
 
   async resetMemberToTemplate(req: Request, res: Response) {
     const user = actor(req)
     const projectId = req.params.projectId as string
     const targetUserId = req.params.userId as string
-    const modules = await resetProjectMemberToTemplate(user, projectId, targetUserId)
-    res.status(200).json({ data: { modules } })
+    const payload = await resetProjectMemberToTemplate(user, projectId, targetUserId)
+    res.status(200).json({ data: payload })
   },
 
   async getTenantTemplate(req: Request, res: Response) {

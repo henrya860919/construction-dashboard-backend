@@ -5,6 +5,7 @@ import { projectRepository } from '../project/project.repository.js'
 import { fileRepository, type AttachmentRecord } from './file.repository.js'
 import { storage } from '../../lib/storage.js'
 import {
+  FILE_CATEGORY_PHOTO,
   UPLOAD_MAX_FILE_SIZE_DEFAULT_BYTES,
 } from '../../constants/file.js'
 import { prisma } from '../../lib/db.js'
@@ -28,6 +29,8 @@ async function ensureProjectFile(
   await assertCanAccessProject(user, projectId)
   if (category === DRAWING_REVISION) {
     await assertProjectModuleAction(user, projectId, 'project.drawings', action)
+  } else if (category === FILE_CATEGORY_PHOTO) {
+    await assertProjectModuleAction(user, projectId, 'construction.photo', action)
   } else {
     await assertProjectModuleAction(user, projectId, 'construction.upload', action)
   }

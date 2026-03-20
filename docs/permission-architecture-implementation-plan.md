@@ -57,17 +57,11 @@
 
 與規格一致採 **點號字串**，前後端共用常數（後端 `src/constants/` 或共用套件；前端 `src/constants/permissions.ts`）。
 
-```
-project.overview, project.wbs, project.gantt, project.resource,
-project.schedule, project.risk, project.duration,
+實際清單以 **`src/constants/permission-modules.ts`（前後端對齊）** 為準，包含例如：
 
-construction.monitor, construction.upload, construction.equipment,
-construction.inspection, construction.diary, construction.defect, construction.photo,
+`project.overview`, `project.members`, `project.wbs`, `project.gantt`, `project.resource`, `project.schedule`, `project.risk`, `project.duration`, `project.drawings`，以及 `construction.*`、`repair.*` 等。
 
-repair.overview, repair.record
-```
-
-**對照 UI**：之後在 `construction-dashboard-frontend` 的 `constants/navigation.ts`（側欄 `pathSuffix`）建立 **pathSuffix → moduleId** 對照表，供側欄 `v-if` 與路由守衛使用。
+**對照 UI**：`construction-dashboard-frontend` 的 `constants/permission-modules.ts` 內 **`NAV_PATH_PERMISSION_MODULE`**（path 後綴 → 模組），供側欄 `canReadPath` 與路由守衛使用。
 
 ---
 

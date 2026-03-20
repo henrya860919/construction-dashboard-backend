@@ -109,6 +109,45 @@ function mapRowsToDto(rows: PermissionRow[]): Record<string, ModulePermissionDto
   return out
 }
 
+function normalizeProjectRole(role: string): 'project_admin' | 'member' | 'viewer' {
+  if (role === 'project_admin' || role === 'member' || role === 'viewer') return role
+  return 'member'
+}
+
+/**
+ * 與 syncProjectMemberPermissionsFromTemplate 相同邏輯（不寫入 DB）：用於比對是否為「專案客製」。
+ */
+export async function getExpectedProjectMemberPermissionsFromTemplate(
+  tenantId: string,
+  userId: string,
+  role: 'project_admin' | 'member' | 'viewer'
+): Promise<Record<string, ModulePermissionDto>> {
+  const templates = await projectPermissionRepository.findTemplatesForUser(tenantId, userId)
+  if (templates.length > 0) {
+    const rows: Array<PermissionRow & { module: PermissionModuleId }> = []
+    for (const t of templates) {
+      if (!isPermissionModuleId(t.module)) continue
+      rows.push({
+        module: t.module,
+        canCreate: t.canCreate,
+        canRead: t.canRead,
+        canUpdate: t.canUpdate,
+        canDelete: t.canDelete,
+      })
+    }
+    if (rows.length > 0) {
+      return mapRowsToDto(rows)
+    }
+  }
+  const defaults = defaultFlagsByProjectRole(role)
+  return mapRowsToDto(recordToRows(defaults))
+}
+
+export type ProjectMemberPermissionsPayload = {
+  modules: Record<string, ModulePermissionDto>
+  baselineModules: Record<string, ModulePermissionDto>
+}
+
 /**
  * @param subjectUserId 權限所屬使用者
  * @param forceDb 管理員檢視／編輯他人時為 true，一律讀 DB
@@ -257,35 +296,46 @@ export async function applyPresetToTenantTemplate(
   return listTenantTemplate(actor, tenantId, targetUserId)
 }
 
-/** 專案內覆寫成員權限（須能管理專案成員） */
+/**
+ * 專案內「成員模組權限覆寫」僅租戶管理員／平台管理員可為（不依 project.members 矩陣）。
+ * 一般 project_user 即使具 project.members update 也不可改他人模組權限。
+ */
+async function assertProjectMemberPermissionOverridesManage(actor: AuthUser, projectId: string): Promise<void> {
+  await assertCanAccessProject(actor, projectId)
+  if (actor.systemRole === 'platform_admin') return
+  if (actor.systemRole !== 'tenant_admin' || !actor.tenantId) {
+    throw new AppError(403, 'FORBIDDEN', '僅租戶管理員或平台管理員可調整專案內成員模組權限')
+  }
+}
+
+/** 專案內覆寫成員權限（僅租戶／平台管理員） */
 export async function listProjectMemberOverrides(
   actor: AuthUser,
   projectId: string,
   targetUserId: string
-): Promise<Record<string, ModulePermissionDto>> {
-  await assertProjectMemberManage(actor, projectId)
+): Promise<ProjectMemberPermissionsPayload> {
+  await assertProjectMemberPermissionOverridesManage(actor, projectId)
   const member = await prisma.projectMember.findFirst({
     where: { projectId, userId: targetUserId, ...notDeleted },
   })
   if (!member) {
     throw new AppError(404, 'NOT_FOUND', '該使用者不是此專案成員')
   }
-  return getModulesMapForUser(projectId, targetUserId, actor, { forceDb: true })
-}
-
-async function assertProjectMemberManage(actor: AuthUser, projectId: string): Promise<void> {
-  if (actor.systemRole === 'platform_admin') return
-  if (actor.systemRole !== 'tenant_admin' || !actor.tenantId) {
-    throw new AppError(403, 'FORBIDDEN', '僅租戶管理員或平台管理員可管理專案成員權限')
-  }
   const project = await prisma.project.findFirst({
     where: { id: projectId, ...notDeleted },
     select: { tenantId: true },
   })
-  if (!project) throw new AppError(404, 'NOT_FOUND', '找不到該專案')
-  if (project.tenantId !== actor.tenantId) {
-    throw new AppError(403, 'FORBIDDEN', '僅能管理同租戶專案')
+  if (!project?.tenantId) {
+    throw new AppError(400, 'BAD_REQUEST', '專案未綁定租戶')
   }
+  const role = normalizeProjectRole(member.role)
+  const modules = await getModulesMapForUser(projectId, targetUserId, actor, { forceDb: true })
+  const baselineModules = await getExpectedProjectMemberPermissionsFromTemplate(
+    project.tenantId,
+    targetUserId,
+    role
+  )
+  return { modules, baselineModules }
 }
 
 export async function replaceProjectMemberOverrides(
@@ -293,14 +343,22 @@ export async function replaceProjectMemberOverrides(
   projectId: string,
   targetUserId: string,
   modules: Record<string, ModulePermissionDto>
-): Promise<Record<string, ModulePermissionDto>> {
-  await assertProjectMemberManage(actor, projectId)
+): Promise<ProjectMemberPermissionsPayload> {
+  await assertProjectMemberPermissionOverridesManage(actor, projectId)
   const member = await prisma.projectMember.findFirst({
     where: { projectId, userId: targetUserId, ...notDeleted },
   })
   if (!member) {
     throw new AppError(404, 'NOT_FOUND', '該使用者不是此專案成員')
   }
+  const project = await prisma.project.findFirst({
+    where: { id: projectId, ...notDeleted },
+    select: { tenantId: true },
+  })
+  if (!project?.tenantId) {
+    throw new AppError(400, 'BAD_REQUEST', '專案未綁定租戶')
+  }
+  const role = normalizeProjectRole(member.role)
   await projectPermissionRepository.deleteManyProjectUser(projectId, targetUserId)
   const rows: Array<PermissionRow & { module: PermissionModuleId }> = []
   for (const m of PERMISSION_MODULES) {
@@ -317,15 +375,21 @@ export async function replaceProjectMemberOverrides(
   if (rows.length > 0) {
     await projectPermissionRepository.createManyProjectPermissions(projectId, targetUserId, rows)
   }
-  return getModulesMapForUser(projectId, targetUserId, actor, { forceDb: true })
+  const next = await getModulesMapForUser(projectId, targetUserId, actor, { forceDb: true })
+  const baselineModules = await getExpectedProjectMemberPermissionsFromTemplate(
+    project.tenantId,
+    targetUserId,
+    role
+  )
+  return { modules: next, baselineModules }
 }
 
 export async function resetProjectMemberToTemplate(
   actor: AuthUser,
   projectId: string,
   targetUserId: string
-): Promise<Record<string, ModulePermissionDto>> {
-  await assertProjectMemberManage(actor, projectId)
+): Promise<ProjectMemberPermissionsPayload> {
+  await assertProjectMemberPermissionOverridesManage(actor, projectId)
   const member = await prisma.projectMember.findFirst({
     where: { projectId, userId: targetUserId, ...notDeleted },
     select: { role: true },
@@ -340,6 +404,13 @@ export async function resetProjectMemberToTemplate(
   if (!project?.tenantId) {
     throw new AppError(400, 'BAD_REQUEST', '專案未綁定租戶')
   }
-  await syncProjectMemberPermissionsFromTemplate(projectId, targetUserId, project.tenantId, member.role)
-  return getModulesMapForUser(projectId, targetUserId, actor, { forceDb: true })
+  const role = normalizeProjectRole(member.role)
+  await syncProjectMemberPermissionsFromTemplate(projectId, targetUserId, project.tenantId, role)
+  const modules = await getModulesMapForUser(projectId, targetUserId, actor, { forceDb: true })
+  const baselineModules = await getExpectedProjectMemberPermissionsFromTemplate(
+    project.tenantId,
+    targetUserId,
+    role
+  )
+  return { modules, baselineModules }
 }
