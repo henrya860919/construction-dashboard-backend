@@ -17,6 +17,12 @@ import { updatePlatformSettingsSchema } from '../schemas/platform-setting.js'
 import { storage } from '../lib/storage.js'
 import { clearMaintenanceCache } from '../middleware/maintenance.js'
 import { notDeleted, softDeleteSet } from '../shared/soft-delete.js'
+import type { PermissionModuleId } from '../constants/permission-modules.js'
+import { replaceTenantModuleEntitlementsSchema } from '../schemas/tenant-module-entitlement.js'
+import {
+  getTenantModuleEntitlementsReadDto,
+  replaceTenantModuleDisables,
+} from '../modules/tenant-module-entitlement/tenant-module-entitlement.service.js'
 
 export const platformAdminRouter = Router()
 
@@ -27,6 +33,27 @@ function parseExpiresAt(value: string | null | undefined): Date | null {
   if (value == null || value === '') return null
   const d = new Date(value)
   return Number.isNaN(d.getTime()) ? null : d
+}
+
+/** 各租戶最早建立之租戶管理員 Email（平台列表／詳情顯示聯絡信箱） */
+async function primaryTenantAdminEmailByTenantIds(tenantIds: string[]): Promise<Map<string, string>> {
+  const map = new Map<string, string>()
+  if (tenantIds.length === 0) return map
+  const admins = await prisma.user.findMany({
+    where: {
+      tenantId: { in: tenantIds },
+      systemRole: 'tenant_admin',
+      ...notDeleted,
+    },
+    select: { tenantId: true, email: true, createdAt: true },
+    orderBy: [{ tenantId: 'asc' }, { createdAt: 'asc' }],
+  })
+  for (const u of admins) {
+    if (u.tenantId && !map.has(u.tenantId)) {
+      map.set(u.tenantId, u.email)
+    }
+  }
+  return map
 }
 
 /** GET /api/v1/platform-admin/tenants — 租戶列表 */
@@ -54,7 +81,67 @@ platformAdminRouter.get(
       prisma.tenant.count({ where }),
     ])
 
-    res.status(200).json({ data: list, meta: { page, limit, total } })
+    const emailMap = await primaryTenantAdminEmailByTenantIds(list.map((t) => t.id))
+    const data = list.map((t) => ({
+      ...t,
+      primaryAdminEmail: emailMap.get(t.id) ?? null,
+    }))
+
+    res.status(200).json({ data, meta: { page, limit, total } })
+  })
+)
+
+/** GET /api/v1/platform-admin/tenants/:id/module-entitlements — 須列在 /tenants/:id 之前，避免部分環境誤匹配 */
+platformAdminRouter.get(
+  '/tenants/:id/module-entitlements',
+  asyncHandler(async (req: Request, res: Response) => {
+    const id = typeof req.params.id === 'string' ? req.params.id : req.params.id?.[0]
+    if (!id) {
+      throw new AppError(400, 'BAD_REQUEST', '缺少租戶 id')
+    }
+    const data = await getTenantModuleEntitlementsReadDto(id)
+    res.status(200).json({ data })
+  })
+)
+
+/** PUT /api/v1/platform-admin/tenants/:id/module-entitlements — 整包取代關閉模組列表；成功後標記平台已開通 */
+platformAdminRouter.put(
+  '/tenants/:id/module-entitlements',
+  asyncHandler(async (req: Request, res: Response) => {
+    const id = typeof req.params.id === 'string' ? req.params.id : req.params.id?.[0]
+    if (!id) {
+      throw new AppError(400, 'BAD_REQUEST', '缺少租戶 id')
+    }
+    const tenant = await prisma.tenant.findFirst({
+      where: { id, ...notDeleted },
+      select: { id: true },
+    })
+    if (!tenant) {
+      throw new AppError(404, 'NOT_FOUND', '找不到該租戶')
+    }
+    const parsed = replaceTenantModuleEntitlementsSchema.safeParse(req.body ?? {})
+    if (!parsed.success) {
+      res.status(400).json({
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: '欄位驗證失敗',
+          details: parsed.error.flatten(),
+        },
+      })
+      return
+    }
+    const disabledModuleIds = await replaceTenantModuleDisables(
+      id,
+      parsed.data.disabledModuleIds as PermissionModuleId[]
+    )
+    await recordAudit(req, {
+      action: 'tenant.module_entitlements.replace',
+      resourceType: 'tenant',
+      resourceId: id,
+      tenantId: id,
+      details: { disabledModuleIds },
+    })
+    res.status(200).json({ data: { disabledModuleIds, moduleEntitlementsGranted: true } })
   })
 )
 
@@ -73,7 +160,10 @@ platformAdminRouter.get(
     if (!tenant) {
       throw new AppError(404, 'NOT_FOUND', '找不到該租戶')
     }
-    res.status(200).json({ data: tenant })
+    const emailMap = await primaryTenantAdminEmailByTenantIds([id])
+    res.status(200).json({
+      data: { ...tenant, primaryAdminEmail: emailMap.get(id) ?? null },
+    })
   })
 )
 

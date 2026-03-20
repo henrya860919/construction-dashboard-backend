@@ -1,9 +1,10 @@
 # 專案內功能模組權限（RBAC）— 開發者指南
 
-專案內存取由兩層組成：
+專案內存取由三層組成：
 
 1. **專案准入**：`assertCanAccessProject`（`src/shared/project-access.ts`）— 是否為專案活躍成員／租戶管理員／平台管理員。
-2. **模組動作**：`assertProjectModuleAction(user, projectId, moduleId, action)`（`src/modules/project-permission/project-permission.service.ts`）— `platform_admin`／`tenant_admin` 略過細粒度檢查；`project_user` 依 `project_member_permissions` 四個 boolean。
+2. **租戶模組開通**：`Tenant.moduleEntitlementsGranted` — 平台尚未於後台儲存過模組設定時為 `false`，**有效**關閉集合＝全部模組（與 `tenant_module_disables` 列一併由 `getEffectiveDisabledModuleIdsSet` 計算）。`tenant_module_disables` — 列於此表之模組對該租戶**關閉**，**含 `tenant_admin`**；在已 `moduleEntitlementsGranted` 前提下未列視為開通。`assertProjectModuleAction` 在細粒度檢查前會先擋（`403` + `MODULE_NOT_ENTITLED`）。**`platform_admin` 不檢查開通**（維運／除錯）。**`tenant_admin`** 另受 `assertTenantMayOperateProjectsAndPermissions`：`moduleEntitlementsGranted` 為 false 或全部模組皆 disable 時，不可新增專案、不可改租戶範本／專案成員模組覆寫。
+3. **模組動作**：`assertProjectModuleAction` — 通過開通檢查後，`platform_admin`／`tenant_admin` 略過 `project_member_permissions`；`project_user` 依四個 boolean。
 
 `action`：`create` | `read` | `update` | `delete`，對應資料列上的 `canCreate`／`canRead`／`canUpdate`／`canDelete`。
 
@@ -20,11 +21,11 @@
 | 3 | Prisma migration | 為既有 `tenant_permission_templates`／`project_member_permissions` **補列**新模組（可複製鄰近模組旗標，見 `20260322120000_add_project_members_module`）；勿只改常數不補 DB。 |
 | 4 | `src/schemas/project-permission.ts` | `replacePermissionModulesSchema` 由 `PERMISSION_MODULES` 驅動，通常**不需手改**，確認編譯通過即可。 |
 | 5 | `preset-roles.ts` | 若 preset 需特例，更新 `PRESET_TEMPLATES`／`defaultFlagsByProjectRole` 語意。 |
-| 6 | 後端業務 Service | 每個對外方法開頭：`await assertProjectModuleAction(user, projectId, '<moduleId>', '<action>')`（已准入則不重複 `assertCanAccessProject`，`assertProjectModuleAction` 內含准入）。 |
+| 6 | 後端業務 Service | 每個對外方法開頭：`await assertProjectModuleAction(user, projectId, '<moduleId>', '<action>')`（內含准入與租戶開通；`platform_admin` 僅略過開通後之細粒度）。 |
 | 7 | `docs/backend-prisma-api.md` | 簡述新模組守護的 API（若屬 3.7 範圍）。 |
 | 8 | 前端路由 | `useProjectRoutePermissionGuard` 已依 `NAV_PATH_PERMISSION_MODULE` 擋無 `read` 者；新 path **必須**掛上對應鍵。 |
 | 9 | `navigation.ts` | 側欄／Layer2／Layer3 新連結的 `pathSuffix` 與步驟 2 一致。 |
-| 10 | 頁面與按鈕 | 使用 `useProjectPermission(projectId)` 的 `can(moduleId, action)`，與後端動作一致；勿只用 `tenant_admin` 判斷。 |
+| 10 | 頁面與按鈕 | 使用 `useProjectPermission(projectId)` 的 `can(moduleId, action)`，與後端動作一致；**勿**以 `tenant_admin` 前端短路為全開（應依 `my-permissions` store）。 |
 
 ---
 
@@ -72,7 +73,7 @@ canReadPath('/construction/defects')
 can('construction.defect', 'create')
 ```
 
-`platform_admin`／`tenant_admin` 在 `useProjectPermission` 內視為全 `true`，與後端略過規則一致。
+`platform_admin` 在 `useProjectPermission` 內視為全 `true`；`tenant_admin` 與 `project_user` 皆依 store（對齊後端遮罩後之 `my-permissions`）。
 
 ---
 

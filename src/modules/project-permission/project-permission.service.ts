@@ -1,6 +1,13 @@
 import { prisma } from '../../lib/db.js'
 import { AppError } from '../../shared/errors.js'
 import { notDeleted } from '../../shared/soft-delete.js'
+import {
+  assertTenantMayOperateProjectsAndPermissions,
+  assertTenantModuleNotDisabled,
+  clampPermissionRows,
+  getEffectiveDisabledModuleIdsSet,
+  maskModulesMap,
+} from '../tenant-module-entitlement/tenant-module-entitlement.service.js'
 import { assertCanAccessProject, type AuthUser } from '../../shared/project-access.js'
 import {
   PERMISSION_MODULES,
@@ -69,6 +76,7 @@ export async function ensureCanManageUserPermissionTemplate(
   if (!u) {
     throw new AppError(404, 'NOT_FOUND', '找不到該租戶成員')
   }
+  await assertTenantMayOperateProjectsAndPermissions(tenantId)
 }
 
 /** 超級使用者略過細粒度；project_user 依 project_member_permissions */
@@ -114,6 +122,17 @@ function normalizeProjectRole(role: string): 'project_admin' | 'member' | 'viewe
   return 'member'
 }
 
+async function getProjectTenantIdOrThrow(projectId: string): Promise<string> {
+  const project = await prisma.project.findFirst({
+    where: { id: projectId, ...notDeleted },
+    select: { tenantId: true },
+  })
+  if (!project?.tenantId) {
+    throw new AppError(400, 'BAD_REQUEST', '專案未綁定租戶')
+  }
+  return project.tenantId
+}
+
 /**
  * 與 syncProjectMemberPermissionsFromTemplate 相同邏輯（不寫入 DB）：用於比對是否為「專案客製」。
  */
@@ -136,11 +155,15 @@ export async function getExpectedProjectMemberPermissionsFromTemplate(
       })
     }
     if (rows.length > 0) {
-      return mapRowsToDto(rows)
+      const map = mapRowsToDto(rows)
+      const disabled = await getEffectiveDisabledModuleIdsSet(tenantId)
+      return maskModulesMap(map, disabled)
     }
   }
   const defaults = defaultFlagsByProjectRole(role)
-  return mapRowsToDto(recordToRows(defaults))
+  const map = mapRowsToDto(recordToRows(defaults))
+  const disabled = await getEffectiveDisabledModuleIdsSet(tenantId)
+  return maskModulesMap(map, disabled)
 }
 
 export type ProjectMemberPermissionsPayload = {
@@ -159,6 +182,8 @@ export async function getModulesMapForUser(
   options?: { forceDb?: boolean }
 ): Promise<Record<string, ModulePermissionDto>> {
   await assertCanAccessProject(actor, projectId)
+  const tenantId = await getProjectTenantIdOrThrow(projectId)
+  const disabled = await getEffectiveDisabledModuleIdsSet(tenantId)
   const forceDb = options?.forceDb === true
   if (
     !forceDb &&
@@ -169,10 +194,17 @@ export async function getModulesMapForUser(
     for (const m of PERMISSION_MODULES) {
       full[m] = { canCreate: true, canRead: true, canUpdate: true, canDelete: true }
     }
-    return full
+    if (actor.systemRole === 'platform_admin') {
+      return full
+    }
+    return maskModulesMap(full, disabled)
   }
   const rows = await projectPermissionRepository.findProjectPermissions(projectId, subjectUserId)
-  return mapRowsToDto(rows)
+  let map = mapRowsToDto(rows)
+  if (actor.systemRole !== 'platform_admin') {
+    map = maskModulesMap(map, disabled)
+  }
+  return map
 }
 
 /** 目前登入者於該專案之有效權限（my-permissions） */
@@ -190,6 +222,10 @@ export async function assertProjectModuleAction(
   action: PermissionAction
 ): Promise<void> {
   await assertCanAccessProject(user, projectId)
+  const tenantId = await getProjectTenantIdOrThrow(projectId)
+  if (user.systemRole !== 'platform_admin') {
+    await assertTenantModuleNotDisabled(tenantId, module)
+  }
   if (bypassesFineGrainedPermissions(user)) {
     return
   }
@@ -207,6 +243,7 @@ export async function syncProjectMemberPermissionsFromTemplate(
   tenantId: string,
   role: 'project_admin' | 'member' | 'viewer'
 ): Promise<void> {
+  const disabled = await getEffectiveDisabledModuleIdsSet(tenantId)
   const templates = await projectPermissionRepository.findTemplatesForUser(tenantId, userId)
   await projectPermissionRepository.deleteManyProjectUser(projectId, userId)
   if (templates.length > 0) {
@@ -222,12 +259,20 @@ export async function syncProjectMemberPermissionsFromTemplate(
       })
     }
     if (rows.length > 0) {
-      await projectPermissionRepository.createManyProjectPermissions(projectId, userId, rows)
+      await projectPermissionRepository.createManyProjectPermissions(
+        projectId,
+        userId,
+        clampPermissionRows(rows, disabled)
+      )
       return
     }
   }
   const defaults = defaultFlagsByProjectRole(role)
-  await projectPermissionRepository.createManyProjectPermissions(projectId, userId, recordToRows(defaults))
+  await projectPermissionRepository.createManyProjectPermissions(
+    projectId,
+    userId,
+    clampPermissionRows(recordToRows(defaults), disabled)
+  )
 }
 
 export async function listTenantTemplate(
@@ -250,6 +295,10 @@ export async function listTenantTemplate(
         }
       : { canCreate: false, canRead: false, canUpdate: false, canDelete: false }
   }
+  if (actor.systemRole !== 'platform_admin') {
+    const disabled = await getEffectiveDisabledModuleIdsSet(tenantId)
+    return maskModulesMap(out, disabled)
+  }
   return out
 }
 
@@ -260,6 +309,7 @@ export async function replaceTenantTemplate(
   modules: Record<string, ModulePermissionDto>
 ): Promise<Record<string, ModulePermissionDto>> {
   await ensureCanManageUserPermissionTemplate(actor, targetUserId, tenantId)
+  const disabled = await getEffectiveDisabledModuleIdsSet(tenantId)
   await projectPermissionRepository.deleteManyTemplates(tenantId, targetUserId)
   const rows: Array<PermissionRow & { module: PermissionModuleId }> = []
   for (const m of PERMISSION_MODULES) {
@@ -273,8 +323,9 @@ export async function replaceTenantTemplate(
       canDelete: !!dto.canDelete,
     })
   }
-  if (rows.length > 0) {
-    await projectPermissionRepository.createManyTemplates(tenantId, targetUserId, rows)
+  const toWrite = clampPermissionRows(rows, disabled)
+  if (toWrite.length > 0) {
+    await projectPermissionRepository.createManyTemplates(tenantId, targetUserId, toWrite)
   }
   return listTenantTemplate(actor, tenantId, targetUserId)
 }
@@ -291,8 +342,13 @@ export async function applyPresetToTenantTemplate(
   }
   const record = build()
   await ensureCanManageUserPermissionTemplate(actor, targetUserId, tenantId)
+  const disabled = await getEffectiveDisabledModuleIdsSet(tenantId)
   await projectPermissionRepository.deleteManyTemplates(tenantId, targetUserId)
-  await projectPermissionRepository.createManyTemplates(tenantId, targetUserId, recordToRows(record))
+  await projectPermissionRepository.createManyTemplates(
+    tenantId,
+    targetUserId,
+    clampPermissionRows(recordToRows(record), disabled)
+  )
   return listTenantTemplate(actor, tenantId, targetUserId)
 }
 
@@ -305,6 +361,12 @@ async function assertProjectMemberPermissionOverridesManage(actor: AuthUser, pro
   if (actor.systemRole === 'platform_admin') return
   if (actor.systemRole !== 'tenant_admin' || !actor.tenantId) {
     throw new AppError(403, 'FORBIDDEN', '僅租戶管理員或平台管理員可調整專案內成員模組權限')
+  }
+}
+
+async function assertTenantAdminMayWriteProjectMemberOverrides(actor: AuthUser): Promise<void> {
+  if (actor.systemRole === 'tenant_admin' && actor.tenantId) {
+    await assertTenantMayOperateProjectsAndPermissions(actor.tenantId)
   }
 }
 
@@ -345,6 +407,7 @@ export async function replaceProjectMemberOverrides(
   modules: Record<string, ModulePermissionDto>
 ): Promise<ProjectMemberPermissionsPayload> {
   await assertProjectMemberPermissionOverridesManage(actor, projectId)
+  await assertTenantAdminMayWriteProjectMemberOverrides(actor)
   const member = await prisma.projectMember.findFirst({
     where: { projectId, userId: targetUserId, ...notDeleted },
   })
@@ -359,6 +422,7 @@ export async function replaceProjectMemberOverrides(
     throw new AppError(400, 'BAD_REQUEST', '專案未綁定租戶')
   }
   const role = normalizeProjectRole(member.role)
+  const disabled = await getEffectiveDisabledModuleIdsSet(project.tenantId)
   await projectPermissionRepository.deleteManyProjectUser(projectId, targetUserId)
   const rows: Array<PermissionRow & { module: PermissionModuleId }> = []
   for (const m of PERMISSION_MODULES) {
@@ -372,8 +436,9 @@ export async function replaceProjectMemberOverrides(
       canDelete: !!dto.canDelete,
     })
   }
-  if (rows.length > 0) {
-    await projectPermissionRepository.createManyProjectPermissions(projectId, targetUserId, rows)
+  const toWrite = clampPermissionRows(rows, disabled)
+  if (toWrite.length > 0) {
+    await projectPermissionRepository.createManyProjectPermissions(projectId, targetUserId, toWrite)
   }
   const next = await getModulesMapForUser(projectId, targetUserId, actor, { forceDb: true })
   const baselineModules = await getExpectedProjectMemberPermissionsFromTemplate(
@@ -390,6 +455,7 @@ export async function resetProjectMemberToTemplate(
   targetUserId: string
 ): Promise<ProjectMemberPermissionsPayload> {
   await assertProjectMemberPermissionOverridesManage(actor, projectId)
+  await assertTenantAdminMayWriteProjectMemberOverrides(actor)
   const member = await prisma.projectMember.findFirst({
     where: { projectId, userId: targetUserId, ...notDeleted },
     select: { role: true },

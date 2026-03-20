@@ -3,6 +3,7 @@ import { AppError } from '../../shared/errors.js'
 import { notDeleted } from '../../shared/soft-delete.js'
 import { assertCanAccessProject } from '../../shared/project-access.js'
 import { assertProjectModuleAction } from '../project-permission/project-permission.service.js'
+import { assertTenantMayOperateProjectsAndPermissions } from '../tenant-module-entitlement/tenant-module-entitlement.service.js'
 import { projectRepository, type ProjectListItem } from './project.repository.js'
 import type { CreateProjectBody, UpdateProjectBody } from '../../schemas/project.js'
 
@@ -119,6 +120,9 @@ export const projectService = {
         : (data.tenantId ?? null)
     if (user.systemRole === 'tenant_admin' && !tenantId) {
       throw new AppError(400, 'BAD_REQUEST', '租戶管理員所屬租戶不明')
+    }
+    if (tenantId) {
+      await assertTenantMayOperateProjectsAndPermissions(tenantId)
     }
     const project = await projectRepository.create({
       name: data.name,

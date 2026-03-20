@@ -20,6 +20,8 @@ model Tenant {
   userLimit        Int?      @map("user_limit")       // 人員上限（未來）
   fileSizeLimitMb  Int?      @map("file_size_limit_mb") // 單筆上傳 MB（未來）
   storageQuotaMb   Int?      @map("storage_quota_mb")   // 總儲存 MB（未來）
+  /// 平台是否已於後台儲存過「模組開通」設定；false 時租戶端視為未開通（全模組不可用，不可新增專案／調整權限）
+  moduleEntitlementsGranted Boolean @default(false) @map("module_entitlements_granted")
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
   deletedAt        DateTime? @map("deleted_at")
@@ -30,8 +32,23 @@ model Tenant {
   formTemplates FormTemplate[]
   selfInspectionTemplates SelfInspectionTemplate[]
   tenantPermissionTemplates TenantPermissionTemplate[]
+  moduleDisables         TenantModuleDisable[]
 
   @@index([slug])
+}
+
+/// 平台關閉之模組：列于此表示該租戶不可使用該模組（含 tenant_admin）；未列則視為開通
+model TenantModuleDisable {
+  id        String   @id @default(cuid())
+  tenantId  String   @map("tenant_id")
+  module    String   @map("module") // PermissionModuleId
+  createdAt DateTime @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, module])
+  @@index([tenantId])
+  @@map("tenant_module_disables")
 }
 
 // ---------- 人員（使用者）----------
