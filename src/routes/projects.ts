@@ -12,6 +12,7 @@ import { albumsRouter } from './albums.js'
 import { photoFavoriteController } from '../modules/photo-favorite/index.js'
 import { cameraController } from '../modules/camera/index.js'
 import { projectMemberController } from '../modules/project-member/index.js'
+import { projectPermissionController } from '../modules/project-permission/project-permission.controller.js'
 import { defectImprovementsRouter } from './defect-improvements.js'
 import { repairRequestsRouter } from './repair-requests.js'
 import { projectSelfInspectionsRouter } from './project-self-inspections.js'
@@ -54,6 +55,19 @@ projectsRouter.get('/:projectId/files', asyncHandler(fileController.listByProjec
 
 /** 專案成員（從租戶成員引入；列表、可加入名單、新增、移除；available 須在 list 前註冊） */
 projectsRouter.get('/:projectId/members/available', asyncHandler(projectMemberController.listAvailable.bind(projectMemberController)))
+projectsRouter.get('/:projectId/my-permissions', asyncHandler(projectPermissionController.myPermissions.bind(projectPermissionController)))
+projectsRouter.get(
+  '/:projectId/members/:userId/permissions',
+  asyncHandler(projectPermissionController.listMemberProjectPermissions.bind(projectPermissionController))
+)
+projectsRouter.put(
+  '/:projectId/members/:userId/permissions',
+  asyncHandler(projectPermissionController.replaceMemberProjectPermissions.bind(projectPermissionController))
+)
+projectsRouter.post(
+  '/:projectId/members/:userId/permissions/reset',
+  asyncHandler(projectPermissionController.resetMemberToTemplate.bind(projectPermissionController))
+)
 projectsRouter.get('/:projectId/members', asyncHandler(projectMemberController.list.bind(projectMemberController)))
 projectsRouter.post('/:projectId/members', asyncHandler(projectMemberController.add.bind(projectMemberController)))
 projectsRouter.patch('/:projectId/members/:userId', asyncHandler(projectMemberController.setStatus.bind(projectMemberController)))

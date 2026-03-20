@@ -1,6 +1,8 @@
 import { prisma } from '../../lib/db.js'
 import { AppError } from '../../shared/errors.js'
 import { notDeleted } from '../../shared/soft-delete.js'
+import { assertCanAccessProject } from '../../shared/project-access.js'
+import { assertProjectModuleAction } from '../project-permission/project-permission.service.js'
 import { issueRiskRepository, type IssueRiskWithRelations } from './issue-risk.repository.js'
 import { wbsRepository } from '../wbs/wbs.repository.js'
 import type { CreateIssueRiskBody, UpdateIssueRiskBody } from '../../schemas/issue-risk.js'
@@ -11,15 +13,9 @@ type AuthUser = {
   tenantId: string | null
 }
 
-async function ensureProjectAccess(projectId: string, user: AuthUser): Promise<void> {
-  const project = await prisma.project.findFirst({
-    where: { id: projectId, ...notDeleted },
-    select: { tenantId: true },
-  })
-  if (!project) throw new AppError(404, 'NOT_FOUND', '找不到該專案')
-  if (user.systemRole !== 'platform_admin' && project.tenantId !== user.tenantId) {
-    throw new AppError(403, 'FORBIDDEN', '無權限操作此專案的議題風險')
-  }
+async function ensureIssueRisk(projectId: string, user: AuthUser, action: 'read' | 'create' | 'update' | 'delete'): Promise<void> {
+  await assertCanAccessProject(user, projectId)
+  await assertProjectModuleAction(user, projectId, 'project.risk', action)
 }
 
 /** 取得專案內「沒有子節點」的 WBS 節點 id 集合（葉節點才可選為影像任務） */
@@ -62,12 +58,12 @@ async function validateWbsNodeIds(
 
 export const issueRiskService = {
   async list(projectId: string, user: AuthUser): Promise<IssueRiskWithRelations[]> {
-    await ensureProjectAccess(projectId, user)
+    await ensureIssueRisk(projectId, user, 'read')
     return issueRiskRepository.findManyByProjectId(projectId)
   },
 
   async create(projectId: string, body: CreateIssueRiskBody, user: AuthUser) {
-    await ensureProjectAccess(projectId, user)
+    await ensureIssueRisk(projectId, user, 'create')
     const leafIds = await getLeafWbsNodeIds(projectId)
     await validateWbsNodeIds(projectId, body.wbsNodeIds ?? [], leafIds)
     const assigneeId = body.assigneeId ?? null
@@ -98,7 +94,7 @@ export const issueRiskService = {
     body: UpdateIssueRiskBody,
     user: AuthUser
   ) {
-    await ensureProjectAccess(projectId, user)
+    await ensureIssueRisk(projectId, user, 'update')
     const existing = await issueRiskRepository.findById(id)
     if (!existing || existing.projectId !== projectId) {
       throw new AppError(404, 'NOT_FOUND', '找不到該議題風險')
@@ -129,7 +125,7 @@ export const issueRiskService = {
   },
 
   async delete(projectId: string, id: string, user: AuthUser): Promise<void> {
-    await ensureProjectAccess(projectId, user)
+    await ensureIssueRisk(projectId, user, 'delete')
     const existing = await issueRiskRepository.findById(id)
     if (!existing || existing.projectId !== projectId) {
       throw new AppError(404, 'NOT_FOUND', '找不到該議題風險')
@@ -138,7 +134,7 @@ export const issueRiskService = {
   },
 
   async getById(projectId: string, id: string, user: AuthUser) {
-    await ensureProjectAccess(projectId, user)
+    await ensureIssueRisk(projectId, user, 'read')
     const row = await issueRiskRepository.findById(id)
     if (!row || row.projectId !== projectId) return null
     return row

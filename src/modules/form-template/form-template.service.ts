@@ -1,6 +1,8 @@
 import crypto from 'node:crypto'
 import { AppError } from '../../shared/errors.js'
 import { notDeleted } from '../../shared/soft-delete.js'
+import { assertCanAccessProject } from '../../shared/project-access.js'
+import { assertProjectModuleAction } from '../project-permission/project-permission.service.js'
 import { formTemplateRepository } from './form-template.repository.js'
 import { storage } from '../../lib/storage.js'
 import { projectRepository } from '../project/project.repository.js'
@@ -20,15 +22,13 @@ async function ensureCanAccessTenant(tenantId: string, user: AuthUser): Promise<
   }
 }
 
-async function ensureCanAccessProject(projectId: string, userId: string, user: AuthUser): Promise<void> {
-  if (user.systemRole === 'platform_admin') return
-  const member = await prisma.projectMember.findFirst({
-    where: { projectId, userId, ...notDeleted },
-    select: { status: true },
-  })
-  if (!member || member.status !== 'active') {
-    throw new AppError(403, 'FORBIDDEN', '非專案成員或已停用，無法存取此專案表單樣板')
-  }
+async function ensureProjectFormTemplate(
+  projectId: string,
+  user: AuthUser,
+  action: 'read' | 'create' | 'update' | 'delete'
+): Promise<void> {
+  await assertCanAccessProject(user, projectId)
+  await assertProjectModuleAction(user, projectId, 'construction.upload', action)
 }
 
 function sha256(buffer: Buffer): string {
@@ -93,7 +93,7 @@ export const formTemplateService = {
     userId: string,
     user: AuthUser
   ) {
-    await ensureCanAccessProject(projectId, userId, user)
+    await ensureProjectFormTemplate(projectId, user, 'create')
     const project = await projectRepository.findById(projectId)
     if (!project) throw new AppError(404, 'NOT_FOUND', '找不到該專案')
     const tenantId = project.tenantId
@@ -128,7 +128,7 @@ export const formTemplateService = {
 
   /** 專案可見樣板（預設 + 專案自訂） */
   async listForProject(projectId: string, userId: string, user: AuthUser) {
-    await ensureCanAccessProject(projectId, userId, user)
+    await ensureProjectFormTemplate(projectId, user, 'read')
     const project = await projectRepository.findById(projectId)
     if (!project) throw new AppError(404, 'NOT_FOUND', '找不到該專案')
     return formTemplateRepository.findForProject(projectId, project.tenantId)
@@ -139,7 +139,7 @@ export const formTemplateService = {
     const row = await formTemplateRepository.findById(id)
     if (!row) throw new AppError(404, 'NOT_FOUND', '找不到該樣板')
     if (row.projectId) {
-      await ensureCanAccessProject(row.projectId, userId, user)
+      await ensureProjectFormTemplate(row.projectId, user, 'read')
     } else if (row.tenantId) {
       await ensureCanAccessTenant(row.tenantId, user)
     }
@@ -151,7 +151,7 @@ export const formTemplateService = {
     const row = await formTemplateRepository.findById(id)
     if (!row) throw new AppError(404, 'NOT_FOUND', '找不到該樣板')
     if (row.projectId) {
-      await ensureCanAccessProject(row.projectId, user.id, user)
+      await ensureProjectFormTemplate(row.projectId, user, 'update')
     } else if (row.tenantId) {
       await ensureCanAccessTenant(row.tenantId, user)
     }
@@ -162,7 +162,7 @@ export const formTemplateService = {
     const row = await formTemplateRepository.findById(id)
     if (!row) throw new AppError(404, 'NOT_FOUND', '找不到該樣板')
     if (row.projectId) {
-      await ensureCanAccessProject(row.projectId, userId, user)
+      await ensureProjectFormTemplate(row.projectId, user, 'delete')
     } else if (row.tenantId) {
       await ensureCanAccessTenant(row.tenantId, user)
     }

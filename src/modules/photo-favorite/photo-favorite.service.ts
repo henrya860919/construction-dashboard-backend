@@ -1,6 +1,6 @@
 import { AppError } from '../../shared/errors.js'
-import { notDeleted } from '../../shared/soft-delete.js'
-import { prisma } from '../../lib/db.js'
+import { assertCanAccessProject } from '../../shared/project-access.js'
+import { assertProjectModuleAction } from '../project-permission/project-permission.service.js'
 import { photoFavoriteRepository } from './photo-favorite.repository.js'
 import { fileRepository, type AttachmentRecord } from '../file/file.repository.js'
 
@@ -10,19 +10,9 @@ type AuthUser = {
   tenantId: string | null
 }
 
-async function ensureUserCanAccessProject(
-  projectId: string,
-  userId: string,
-  isPlatformAdmin: boolean
-): Promise<void> {
-  if (isPlatformAdmin) return
-  const member = await prisma.projectMember.findFirst({
-    where: { projectId, userId, ...notDeleted },
-    select: { status: true },
-  })
-  if (!member || member.status !== 'active') {
-    throw new AppError(403, 'FORBIDDEN', '非專案成員或已停用，無法存取此專案')
-  }
+async function ensurePhoto(projectId: string, user: AuthUser, action: 'read' | 'create' | 'delete'): Promise<void> {
+  await assertCanAccessProject(user, projectId)
+  await assertProjectModuleAction(user, projectId, 'construction.photo', action)
 }
 
 export type FavoritePhotoItem = AttachmentRecord & {
@@ -31,7 +21,7 @@ export type FavoritePhotoItem = AttachmentRecord & {
 
 export const photoFavoriteService = {
   async list(projectId: string, userId: string, user: AuthUser): Promise<FavoritePhotoItem[]> {
-    await ensureUserCanAccessProject(projectId, userId, user.systemRole === 'platform_admin')
+    await ensurePhoto(projectId, user, 'read')
     const attachmentIds = await photoFavoriteRepository.findAttachmentIdsByUserAndProject(
       userId,
       projectId
@@ -61,7 +51,7 @@ export const photoFavoriteService = {
     userId: string,
     user: AuthUser
   ): Promise<void> {
-    await ensureUserCanAccessProject(projectId, userId, user.systemRole === 'platform_admin')
+    await ensurePhoto(projectId, user, 'create')
     const attachment = await fileRepository.findById(attachmentId)
     if (!attachment) {
       throw new AppError(404, 'NOT_FOUND', '找不到該檔案')
@@ -78,7 +68,7 @@ export const photoFavoriteService = {
     userId: string,
     user: AuthUser
   ): Promise<void> {
-    await ensureUserCanAccessProject(projectId, userId, user.systemRole === 'platform_admin')
+    await ensurePhoto(projectId, user, 'delete')
     await photoFavoriteRepository.remove(userId, attachmentId)
   },
 }

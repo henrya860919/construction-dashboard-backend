@@ -1,6 +1,8 @@
 import { prisma } from '../../lib/db.js'
 import { AppError } from '../../shared/errors.js'
 import { notDeleted } from '../../shared/soft-delete.js'
+import { assertCanAccessProject } from '../../shared/project-access.js'
+import { assertProjectModuleAction } from '../project-permission/project-permission.service.js'
 import {
   defectImprovementRepository,
   defectExecutionRecordRepository,
@@ -22,19 +24,13 @@ type AuthUser = {
   tenantId: string | null
 }
 
-async function ensureUserCanAccessProject(
+async function ensureDefect(
   projectId: string,
-  userId: string,
-  isPlatformAdmin: boolean
+  user: AuthUser,
+  action: 'read' | 'create' | 'update' | 'delete'
 ): Promise<void> {
-  if (isPlatformAdmin) return
-  const member = await prisma.projectMember.findFirst({
-    where: { projectId, userId, ...notDeleted },
-    select: { status: true },
-  })
-  if (!member || member.status !== 'active') {
-    throw new AppError(403, 'FORBIDDEN', '非專案成員或已停用，無法存取此專案的缺失改善')
-  }
+  await assertCanAccessProject(user, projectId)
+  await assertProjectModuleAction(user, projectId, 'construction.defect', action)
 }
 
 /** 將已上傳的附件綁定到業務 ID（缺陷或執行紀錄） */
@@ -86,7 +82,7 @@ export const defectImprovementService = {
     args: { status?: string; page?: number; limit?: number },
     user: AuthUser
   ): Promise<{ items: DefectListItem[]; total: number }> {
-    await ensureUserCanAccessProject(projectId, user.id, user.systemRole === 'platform_admin')
+    await ensureDefect(projectId, user, 'read')
     const limit = Math.min(50, Math.max(1, args.limit ?? 20))
     const page = Math.max(1, args.page ?? 1)
     const skip = (page - 1) * limit
@@ -106,7 +102,7 @@ export const defectImprovementService = {
     defectId: string,
     user: AuthUser
   ): Promise<(DefectListItem & { photos: AttachmentMeta[] }) | null> {
-    await ensureUserCanAccessProject(projectId, user.id, user.systemRole === 'platform_admin')
+    await ensureDefect(projectId, user, 'read')
     const defect = await defectImprovementRepository.findById(defectId)
     if (!defect || defect.projectId !== projectId) return null
     const photos = await getAttachmentsByBusiness(projectId, defectId, DEFECT_PHOTO_CATEGORY)
@@ -118,7 +114,7 @@ export const defectImprovementService = {
     projectId: string,
     user: AuthUser
   ): Promise<(DefectExecutionRecordRow & { photos: AttachmentMeta[] })[]> {
-    await ensureUserCanAccessProject(projectId, user.id, user.systemRole === 'platform_admin')
+    await ensureDefect(projectId, user, 'read')
     const defect = await defectImprovementRepository.findById(defectId)
     if (!defect || defect.projectId !== projectId) {
       throw new AppError(404, 'NOT_FOUND', '找不到該缺失改善')
@@ -156,7 +152,7 @@ export const defectImprovementService = {
     recordId: string,
     user: AuthUser
   ): Promise<(DefectExecutionRecordRow & { photos: AttachmentMeta[] }) | null> {
-    await ensureUserCanAccessProject(projectId, user.id, user.systemRole === 'platform_admin')
+    await ensureDefect(projectId, user, 'read')
     const defect = await defectImprovementRepository.findById(defectId)
     if (!defect || defect.projectId !== projectId) return null
     const record = await defectExecutionRecordRepository.findById(recordId)
@@ -166,7 +162,7 @@ export const defectImprovementService = {
   },
 
   async create(projectId: string, body: CreateDefectImprovementBody, user: AuthUser): Promise<DefectListItem> {
-    await ensureUserCanAccessProject(projectId, user.id, user.systemRole === 'platform_admin')
+    await ensureDefect(projectId, user, 'create')
     const defect = await defectImprovementRepository.create({
       projectId,
       description: body.description.trim(),
@@ -188,7 +184,7 @@ export const defectImprovementService = {
     body: UpdateDefectImprovementBody,
     user: AuthUser
   ): Promise<DefectListItem> {
-    await ensureUserCanAccessProject(projectId, user.id, user.systemRole === 'platform_admin')
+    await ensureDefect(projectId, user, 'update')
     const existing = await defectImprovementRepository.findById(defectId)
     if (!existing || existing.projectId !== projectId) {
       throw new AppError(404, 'NOT_FOUND', '找不到該缺失改善')
@@ -204,7 +200,7 @@ export const defectImprovementService = {
   },
 
   async delete(projectId: string, defectId: string, user: AuthUser): Promise<void> {
-    await ensureUserCanAccessProject(projectId, user.id, user.systemRole === 'platform_admin')
+    await ensureDefect(projectId, user, 'delete')
     const existing = await defectImprovementRepository.findById(defectId)
     if (!existing || existing.projectId !== projectId) {
       throw new AppError(404, 'NOT_FOUND', '找不到該缺失改善')
@@ -218,7 +214,7 @@ export const defectImprovementService = {
     body: CreateDefectExecutionRecordBody,
     user: AuthUser
   ): Promise<DefectExecutionRecordRow> {
-    await ensureUserCanAccessProject(projectId, user.id, user.systemRole === 'platform_admin')
+    await ensureDefect(projectId, user, 'create')
     const defect = await defectImprovementRepository.findById(defectId)
     if (!defect || defect.projectId !== projectId) {
       throw new AppError(404, 'NOT_FOUND', '找不到該缺失改善')

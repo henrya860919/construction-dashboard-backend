@@ -8,6 +8,8 @@ import {
 } from '../self-inspection-template/self-inspection-template.repository.js'
 import { mergeHeaderConfig, type HeaderConfig } from '../../schemas/self-inspection-template.js'
 import { notDeleted } from '../../shared/soft-delete.js'
+import { assertCanAccessProject } from '../../shared/project-access.js'
+import { assertProjectModuleAction } from '../project-permission/project-permission.service.js'
 import type { FilledPayloadInput } from '../../schemas/self-inspection-record.js'
 import {
   projectSelfInspectionRepository,
@@ -22,19 +24,13 @@ type AuthUser = {
   tenantId: string | null
 }
 
-async function ensureUserCanAccessProject(
+async function ensureInspection(
   projectId: string,
-  userId: string,
-  isPlatformAdmin: boolean
+  user: AuthUser,
+  action: 'read' | 'create' | 'delete'
 ): Promise<void> {
-  if (isPlatformAdmin) return
-  const member = await prisma.projectMember.findFirst({
-    where: { projectId, userId, ...notDeleted },
-    select: { status: true },
-  })
-  if (!member || member.status !== 'active') {
-    throw new AppError(403, 'FORBIDDEN', '非專案成員或已停用，無法存取此專案的自主查驗')
-  }
+  await assertCanAccessProject(user, projectId)
+  await assertProjectModuleAction(user, projectId, 'construction.inspection', action)
 }
 
 async function getProjectTenantId(projectId: string): Promise<string> {
@@ -181,7 +177,7 @@ function buildStructureSnapshotJson(
 export const projectSelfInspectionService = {
   /** 已匯入本專案之樣板（含查驗次數、匯入時間） */
   async listTemplates(projectId: string, user: AuthUser) {
-    await ensureUserCanAccessProject(projectId, user.id, user.systemRole === 'platform_admin')
+    await ensureInspection(projectId, user, 'read')
     const tenantId = await getProjectTenantId(projectId)
     const links = await projectSelfInspectionLinkRepository.findLinksWithTemplates(projectId)
     const filtered = links.filter((l) => l.template.tenantId === tenantId)
@@ -202,7 +198,7 @@ export const projectSelfInspectionService = {
 
   /** 租戶後台啟用中、且尚未匯入本專案之樣板（供勾選匯入） */
   async listAvailableTemplates(projectId: string, user: AuthUser) {
-    await ensureUserCanAccessProject(projectId, user.id, user.systemRole === 'platform_admin')
+    await ensureInspection(projectId, user, 'read')
     const tenantId = await getProjectTenantId(projectId)
     const linkedIds = await projectSelfInspectionLinkRepository.findLinkedTemplateIds(projectId)
     const where: Prisma.SelfInspectionTemplateWhereInput = {
@@ -238,7 +234,7 @@ export const projectSelfInspectionService = {
 
   /** 租戶啟用中樣板全集 + 是否已匯入本專案（供匯入 UI 勾選；已匯入列 disabled） */
   async listImportCatalog(projectId: string, user: AuthUser) {
-    await ensureUserCanAccessProject(projectId, user.id, user.systemRole === 'platform_admin')
+    await ensureInspection(projectId, user, 'read')
     const tenantId = await getProjectTenantId(projectId)
     const linkedIds = new Set(await projectSelfInspectionLinkRepository.findLinkedTemplateIds(projectId))
     const rows = await prisma.selfInspectionTemplate.findMany({
@@ -267,7 +263,7 @@ export const projectSelfInspectionService = {
   },
 
   async importTemplate(projectId: string, templateId: string, user: AuthUser) {
-    await ensureUserCanAccessProject(projectId, user.id, user.systemRole === 'platform_admin')
+    await ensureInspection(projectId, user, 'create')
     const tenantId = await getProjectTenantId(projectId)
     const templateRow = await loadTemplateInTenant(templateId, tenantId)
     if (templateRow.status !== 'active') {
@@ -300,7 +296,7 @@ export const projectSelfInspectionService = {
   },
 
   async removeTemplateFromProject(projectId: string, templateId: string, user: AuthUser) {
-    await ensureUserCanAccessProject(projectId, user.id, user.systemRole === 'platform_admin')
+    await ensureInspection(projectId, user, 'delete')
     const tenantId = await getProjectTenantId(projectId)
     await loadTemplateInTenant(templateId, tenantId)
     const exists = await projectSelfInspectionLinkRepository.exists(projectId, templateId)
@@ -319,7 +315,7 @@ export const projectSelfInspectionService = {
   },
 
   async getTemplateForProject(projectId: string, templateId: string, user: AuthUser) {
-    await ensureUserCanAccessProject(projectId, user.id, user.systemRole === 'platform_admin')
+    await ensureInspection(projectId, user, 'read')
     const tenantId = await getProjectTenantId(projectId)
     const templateRow = await loadTemplateInTenant(templateId, tenantId)
     await ensureTemplateLinkedToProject(projectId, templateId)
@@ -338,7 +334,7 @@ export const projectSelfInspectionService = {
     user: AuthUser,
     args: { page: number; limit: number }
   ) {
-    await ensureUserCanAccessProject(projectId, user.id, user.systemRole === 'platform_admin')
+    await ensureInspection(projectId, user, 'read')
     const tenantId = await getProjectTenantId(projectId)
     await loadTemplateInTenant(templateId, tenantId)
     await ensureTemplateLinkedToProject(projectId, templateId)
@@ -358,7 +354,7 @@ export const projectSelfInspectionService = {
     user: AuthUser,
     filledPayload: FilledPayloadInput
   ) {
-    await ensureUserCanAccessProject(projectId, user.id, user.systemRole === 'platform_admin')
+    await ensureInspection(projectId, user, 'create')
     const tenantId = await getProjectTenantId(projectId)
     const templateRow = await loadTemplateInTenant(templateId, tenantId)
     await ensureTemplateLinkedToProject(projectId, templateId)
@@ -378,7 +374,7 @@ export const projectSelfInspectionService = {
   },
 
   async getRecord(projectId: string, templateId: string, recordId: string, user: AuthUser) {
-    await ensureUserCanAccessProject(projectId, user.id, user.systemRole === 'platform_admin')
+    await ensureInspection(projectId, user, 'read')
     const tenantId = await getProjectTenantId(projectId)
     await loadTemplateInTenant(templateId, tenantId)
     await ensureTemplateLinkedToProject(projectId, templateId)

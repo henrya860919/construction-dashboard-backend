@@ -15,6 +15,8 @@ import { uploadSingleFile } from '../middleware/upload.js'
 import { asyncHandler } from '../shared/utils/async-handler.js'
 import { AppError } from '../shared/errors.js'
 import { notDeleted, softDeleteSet } from '../shared/soft-delete.js'
+import { projectPermissionController } from '../modules/project-permission/project-permission.controller.js'
+import { getTenantModuleEntitlementsReadDto } from '../modules/tenant-module-entitlement/tenant-module-entitlement.service.js'
 
 export const adminRouter = Router()
 
@@ -62,6 +64,30 @@ adminRouter.get(
         storageUsageBytes,
       },
     })
+  })
+)
+
+/** GET /api/v1/admin/tenant/module-entitlements — 本租戶功能模組開通狀態（唯讀，與平台設定一致）；platform_admin 須 ?tenantId= */
+adminRouter.get(
+  '/tenant/module-entitlements',
+  asyncHandler(async (req: Request, res: Response) => {
+    const user = req.user!
+    const tenantId = user.tenantId ?? (req.query.tenantId as string | undefined)
+    if (!tenantId) {
+      throw new AppError(404, 'NOT_FOUND', '無所屬租戶或未指定租戶')
+    }
+    if (user.systemRole !== 'platform_admin' && user.tenantId !== tenantId) {
+      throw new AppError(403, 'FORBIDDEN', '僅能查看所屬租戶')
+    }
+    const exists = await prisma.tenant.findFirst({
+      where: { id: tenantId, ...notDeleted },
+      select: { id: true },
+    })
+    if (!exists) {
+      throw new AppError(404, 'NOT_FOUND', '找不到該租戶')
+    }
+    const data = await getTenantModuleEntitlementsReadDto(tenantId)
+    res.status(200).json({ data })
   })
 )
 
@@ -323,6 +349,22 @@ adminRouter.post(
     })
     res.status(201).json({ data: created })
   })
+)
+
+/** GET /api/v1/admin/users/:id/permission-template — 成員權限範本（矩陣）；platform_admin 須 ?tenantId= */
+adminRouter.get(
+  '/users/:id/permission-template',
+  asyncHandler(projectPermissionController.getTenantTemplate.bind(projectPermissionController))
+)
+/** PUT /api/v1/admin/users/:id/permission-template — 整批取代範本（body.modules 須含全部模組） */
+adminRouter.put(
+  '/users/:id/permission-template',
+  asyncHandler(projectPermissionController.replaceTenantTemplate.bind(projectPermissionController))
+)
+/** POST /api/v1/admin/users/:id/permission-template/apply-preset — 套用預設角色 */
+adminRouter.post(
+  '/users/:id/permission-template/apply-preset',
+  asyncHandler(projectPermissionController.applyTenantPreset.bind(projectPermissionController))
 )
 
 /** GET /api/v1/admin/users/:id — 取得單一成員詳情（檢視成員資料） */

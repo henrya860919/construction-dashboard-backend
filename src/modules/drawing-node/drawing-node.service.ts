@@ -1,6 +1,8 @@
 import { prisma } from '../../lib/db.js'
 import { AppError } from '../../shared/errors.js'
 import { notDeleted } from '../../shared/soft-delete.js'
+import { assertCanAccessProject } from '../../shared/project-access.js'
+import { assertProjectModuleAction } from '../project-permission/project-permission.service.js'
 import { drawingNodeRepository, type DrawingNodeRecord } from './drawing-node.repository.js'
 import type { CreateDrawingNodeBody, UpdateDrawingNodeBody, MoveDrawingNodeBody } from '../../schemas/drawing-node.js'
 import { fileService } from '../file/file.service.js'
@@ -29,35 +31,13 @@ export type DrawingNodeTree = {
   children?: DrawingNodeTree[]
 }
 
-async function ensureProjectTenant(projectId: string, user: AuthUser): Promise<void> {
-  const project = await prisma.project.findFirst({
-    where: { id: projectId, ...notDeleted },
-    select: { tenantId: true },
-  })
-  if (!project) throw new AppError(404, 'NOT_FOUND', '找不到該專案')
-  if (user.systemRole !== 'platform_admin' && project.tenantId !== user.tenantId) {
-    throw new AppError(403, 'FORBIDDEN', '無權限操作此專案的圖說')
-  }
-}
-
-async function ensureUserCanAccessProject(
+async function ensureDrawings(
   projectId: string,
-  userId: string,
-  isPlatformAdmin: boolean
+  user: AuthUser,
+  action: 'read' | 'create' | 'update' | 'delete'
 ): Promise<void> {
-  if (isPlatformAdmin) return
-  const member = await prisma.projectMember.findFirst({
-    where: { projectId, userId, ...notDeleted },
-    select: { status: true },
-  })
-  if (!member || member.status !== 'active') {
-    throw new AppError(403, 'FORBIDDEN', '非專案成員或已停用，無法存取圖說管理')
-  }
-}
-
-async function ensureDrawingAccess(projectId: string, user: AuthUser): Promise<void> {
-  await ensureProjectTenant(projectId, user)
-  await ensureUserCanAccessProject(projectId, user.id, user.systemRole === 'platform_admin')
+  await assertCanAccessProject(user, projectId)
+  await assertProjectModuleAction(user, projectId, 'project.drawings', action)
 }
 
 function normalizeParentId(raw: string | null | undefined): string | null {
@@ -158,14 +138,14 @@ function collectAllLeafIdsInSubtree(flat: DrawingNodeRecord[], rootId: string): 
 
 export const drawingNodeService = {
   async list(projectId: string, user: AuthUser): Promise<DrawingNodeTree[]> {
-    await ensureDrawingAccess(projectId, user)
+    await ensureDrawings(projectId, user, 'read')
     const flat = await drawingNodeRepository.findManyByProjectId(projectId)
     const tree = buildTree(flat, null)
     return attachLatestFiles(projectId, tree)
   },
 
   async create(projectId: string, body: CreateDrawingNodeBody, user: AuthUser): Promise<DrawingNodeTree[]> {
-    await ensureDrawingAccess(projectId, user)
+    await ensureDrawings(projectId, user, 'create')
     const parentId = normalizeParentId(body.parentId)
     if (parentId) {
       const parent = await drawingNodeRepository.findById(parentId)
@@ -195,7 +175,7 @@ export const drawingNodeService = {
     body: UpdateDrawingNodeBody,
     user: AuthUser
   ): Promise<DrawingNodeTree[]> {
-    await ensureDrawingAccess(projectId, user)
+    await ensureDrawings(projectId, user, 'update')
     const existing = await drawingNodeRepository.findById(id)
     if (!existing || existing.projectId !== projectId) {
       throw new AppError(404, 'NOT_FOUND', '找不到該節點')
@@ -205,7 +185,7 @@ export const drawingNodeService = {
   },
 
   async delete(projectId: string, id: string, user: AuthUser): Promise<void> {
-    await ensureDrawingAccess(projectId, user)
+    await ensureDrawings(projectId, user, 'delete')
     const existing = await drawingNodeRepository.findById(id)
     if (!existing || existing.projectId !== projectId) {
       throw new AppError(404, 'NOT_FOUND', '找不到該節點')
@@ -230,7 +210,7 @@ export const drawingNodeService = {
   },
 
   async move(projectId: string, id: string, body: MoveDrawingNodeBody, user: AuthUser): Promise<DrawingNodeTree[]> {
-    await ensureDrawingAccess(projectId, user)
+    await ensureDrawings(projectId, user, 'update')
     const node = await drawingNodeRepository.findById(id)
     if (!node || node.projectId !== projectId) {
       throw new AppError(404, 'NOT_FOUND', '找不到該節點')
@@ -280,7 +260,7 @@ export const drawingNodeService = {
   },
 
   async listRevisions(projectId: string, nodeId: string, user: AuthUser) {
-    await ensureDrawingAccess(projectId, user)
+    await ensureDrawings(projectId, user, 'read')
     const existing = await drawingNodeRepository.findById(nodeId)
     if (!existing || existing.projectId !== projectId) {
       throw new AppError(404, 'NOT_FOUND', '找不到該節點')

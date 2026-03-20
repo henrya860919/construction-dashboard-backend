@@ -1,6 +1,8 @@
 import { prisma } from '../../lib/db.js'
 import { AppError } from '../../shared/errors.js'
 import { notDeleted } from '../../shared/soft-delete.js'
+import { assertCanAccessProject } from '../../shared/project-access.js'
+import { assertProjectModuleAction } from '../project-permission/project-permission.service.js'
 import {
   repairRequestRepository,
   repairExecutionRecordRepository,
@@ -23,19 +25,13 @@ type AuthUser = {
   tenantId: string | null
 }
 
-async function ensureUserCanAccessProject(
+async function ensureRepair(
   projectId: string,
-  userId: string,
-  isPlatformAdmin: boolean
+  user: AuthUser,
+  action: 'read' | 'create' | 'update' | 'delete'
 ): Promise<void> {
-  if (isPlatformAdmin) return
-  const member = await prisma.projectMember.findFirst({
-    where: { projectId, userId, ...notDeleted },
-    select: { status: true },
-  })
-  if (!member || member.status !== 'active') {
-    throw new AppError(403, 'FORBIDDEN', '非專案成員或已停用，無法存取此專案的報修')
-  }
+  await assertCanAccessProject(user, projectId)
+  await assertProjectModuleAction(user, projectId, 'repair.record', action)
 }
 
 async function linkAttachments(
@@ -104,7 +100,7 @@ export const repairRequestService = {
     args: { status?: string; page?: number; limit?: number },
     user: AuthUser
   ): Promise<{ items: RepairListItem[]; total: number }> {
-    await ensureUserCanAccessProject(projectId, user.id, user.systemRole === 'platform_admin')
+    await ensureRepair(projectId, user, 'read')
     const limit = Math.min(50, Math.max(1, args.limit ?? 20))
     const page = Math.max(1, args.page ?? 1)
     const skip = (page - 1) * limit
@@ -124,7 +120,7 @@ export const repairRequestService = {
     repairId: string,
     user: AuthUser
   ): Promise<(RepairListItem & { photos: AttachmentMeta[]; attachments: AttachmentMeta[] }) | null> {
-    await ensureUserCanAccessProject(projectId, user.id, user.systemRole === 'platform_admin')
+    await ensureRepair(projectId, user, 'read')
     const row = await repairRequestRepository.findById(repairId)
     if (!row || row.projectId !== projectId) return null
     const [photos, attachments] = await Promise.all([
@@ -135,7 +131,7 @@ export const repairRequestService = {
   },
 
   async create(projectId: string, body: CreateRepairRequestBody, user: AuthUser): Promise<RepairListItem> {
-    await ensureUserCanAccessProject(projectId, user.id, user.systemRole === 'platform_admin')
+    await ensureRepair(projectId, user, 'create')
     const repair = await repairRequestRepository.create({
       projectId,
       customerName: body.customerName.trim(),
@@ -164,7 +160,7 @@ export const repairRequestService = {
     body: UpdateRepairRequestBody,
     user: AuthUser
   ): Promise<RepairListItem> {
-    await ensureUserCanAccessProject(projectId, user.id, user.systemRole === 'platform_admin')
+    await ensureRepair(projectId, user, 'update')
     const existing = await repairRequestRepository.findById(repairId)
     if (!existing || existing.projectId !== projectId) {
       throw new AppError(404, 'NOT_FOUND', '找不到該報修單')
@@ -186,7 +182,7 @@ export const repairRequestService = {
   },
 
   async delete(projectId: string, repairId: string, user: AuthUser): Promise<void> {
-    await ensureUserCanAccessProject(projectId, user.id, user.systemRole === 'platform_admin')
+    await ensureRepair(projectId, user, 'delete')
     const existing = await repairRequestRepository.findById(repairId)
     if (!existing || existing.projectId !== projectId) {
       throw new AppError(404, 'NOT_FOUND', '找不到該報修單')
@@ -199,7 +195,7 @@ export const repairRequestService = {
     projectId: string,
     user: AuthUser
   ): Promise<(RepairExecutionRecordRow & { photos: AttachmentMeta[] })[]> {
-    await ensureUserCanAccessProject(projectId, user.id, user.systemRole === 'platform_admin')
+    await ensureRepair(projectId, user, 'read')
     const repair = await repairRequestRepository.findById(repairId)
     if (!repair || repair.projectId !== projectId) {
       throw new AppError(404, 'NOT_FOUND', '找不到該報修單')
@@ -237,7 +233,7 @@ export const repairRequestService = {
     recordId: string,
     user: AuthUser
   ): Promise<(RepairExecutionRecordRow & { photos: AttachmentMeta[] }) | null> {
-    await ensureUserCanAccessProject(projectId, user.id, user.systemRole === 'platform_admin')
+    await ensureRepair(projectId, user, 'read')
     const repair = await repairRequestRepository.findById(repairId)
     if (!repair || repair.projectId !== projectId) return null
     const record = await repairExecutionRecordRepository.findById(recordId)
@@ -252,7 +248,7 @@ export const repairRequestService = {
     body: CreateRepairExecutionRecordBody,
     user: AuthUser
   ): Promise<RepairExecutionRecordRow> {
-    await ensureUserCanAccessProject(projectId, user.id, user.systemRole === 'platform_admin')
+    await ensureRepair(projectId, user, 'create')
     const repair = await repairRequestRepository.findById(repairId)
     if (!repair || repair.projectId !== projectId) {
       throw new AppError(404, 'NOT_FOUND', '找不到該報修單')

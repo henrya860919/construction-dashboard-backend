@@ -1,6 +1,10 @@
 /**
  * 檔案上傳常數，與前端對齊
  */
+
+/** 影像管理／圖庫（對應權限模組 `construction.photo`） */
+export const FILE_CATEGORY_PHOTO = 'photo'
+
 export const CHUNKED_UPLOAD_THRESHOLD_BYTES = 5 * 1024 * 1024 // 5MB
 export const CHUNKED_UPLOAD_MAX_TOTAL_BYTES = 50 * 1024 * 1024 // 50MB
 export const CHUNKED_UPLOAD_CHUNK_SIZE = 2 * 1024 * 1024 // 2MB

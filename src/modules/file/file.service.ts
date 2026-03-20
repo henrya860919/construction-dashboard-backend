@@ -5,9 +5,12 @@ import { projectRepository } from '../project/project.repository.js'
 import { fileRepository, type AttachmentRecord } from './file.repository.js'
 import { storage } from '../../lib/storage.js'
 import {
+  FILE_CATEGORY_PHOTO,
   UPLOAD_MAX_FILE_SIZE_DEFAULT_BYTES,
 } from '../../constants/file.js'
 import { prisma } from '../../lib/db.js'
+import { assertCanAccessProject } from '../../shared/project-access.js'
+import { assertProjectModuleAction } from '../project-permission/project-permission.service.js'
 
 type AuthUser = {
   id: string
@@ -15,14 +18,21 @@ type AuthUser = {
   tenantId: string | null
 }
 
-async function ensureUserCanAccessProject(projectId: string, userId: string, isPlatformAdmin: boolean): Promise<void> {
-  if (isPlatformAdmin) return
-  const member = await prisma.projectMember.findFirst({
-    where: { projectId, userId, ...notDeleted },
-    select: { status: true },
-  })
-  if (!member || member.status !== 'active') {
-    throw new AppError(403, 'FORBIDDEN', '非專案成員或已停用，無法存取此專案檔案')
+const DRAWING_REVISION = 'drawing_revision'
+
+async function ensureProjectFile(
+  projectId: string,
+  user: AuthUser,
+  action: 'read' | 'create' | 'delete',
+  category: string | null | undefined
+): Promise<void> {
+  await assertCanAccessProject(user, projectId)
+  if (category === DRAWING_REVISION) {
+    await assertProjectModuleAction(user, projectId, 'project.drawings', action)
+  } else if (category === FILE_CATEGORY_PHOTO) {
+    await assertProjectModuleAction(user, projectId, 'construction.photo', action)
+  } else {
+    await assertProjectModuleAction(user, projectId, 'construction.upload', action)
   }
 }
 
@@ -47,7 +57,7 @@ export const fileService = {
     user: AuthUser,
     options: { category?: string; businessId?: string } = {}
   ): Promise<AttachmentRecord> {
-    await ensureUserCanAccessProject(projectId, userId, user.systemRole === 'platform_admin')
+    await ensureProjectFile(projectId, user, 'create', options.category)
 
     const project = await projectRepository.findById(projectId)
     if (!project) {
@@ -119,7 +129,7 @@ export const fileService = {
     if (!att) {
       throw new AppError(404, 'NOT_FOUND', '找不到該檔案')
     }
-    await ensureUserCanAccessProject(att.projectId, userId, user.systemRole === 'platform_admin')
+    await ensureProjectFile(att.projectId, user, 'read', att.category)
     const { stream, contentType } = await storage.getStream(att.storageKey)
     return { ...att, stream, contentType: contentType ?? att.mimeType }
   },
@@ -129,7 +139,7 @@ export const fileService = {
     if (!att) {
       throw new AppError(404, 'NOT_FOUND', '找不到該檔案')
     }
-    await ensureUserCanAccessProject(att.projectId, userId, user.systemRole === 'platform_admin')
+    await ensureProjectFile(att.projectId, user, 'read', att.category)
     return att
   },
 
@@ -139,7 +149,7 @@ export const fileService = {
     userId: string,
     user: AuthUser
   ): Promise<{ items: (AttachmentRecord & { uploaderName?: string | null })[]; total: number }> {
-    await ensureUserCanAccessProject(projectId, userId, user.systemRole === 'platform_admin')
+    await ensureProjectFile(projectId, user, 'read', args.category)
     const skip = (args.page - 1) * args.limit
     const { items, total } = await fileRepository.findByProjectId(projectId, {
       skip,
@@ -169,7 +179,7 @@ export const fileService = {
     if (!att) {
       throw new AppError(404, 'NOT_FOUND', '找不到該檔案')
     }
-    await ensureUserCanAccessProject(att.projectId, userId, user.systemRole === 'platform_admin')
+    await ensureProjectFile(att.projectId, user, 'delete', att.category)
 
     const refCount = await fileRepository.countByStorageKey(att.storageKey)
     const removed = await fileRepository.softDelete(id, userId)

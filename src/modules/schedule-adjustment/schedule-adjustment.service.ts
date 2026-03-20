@@ -1,6 +1,6 @@
-import { prisma } from '../../lib/db.js'
 import { AppError } from '../../shared/errors.js'
-import { notDeleted } from '../../shared/soft-delete.js'
+import { assertCanAccessProject } from '../../shared/project-access.js'
+import { assertProjectModuleAction } from '../project-permission/project-permission.service.js'
 import { scheduleAdjustmentRepository, type ScheduleAdjustmentItem } from './schedule-adjustment.repository.js'
 import type { CreateScheduleAdjustmentBody, UpdateScheduleAdjustmentBody } from '../../schemas/scheduleAdjustment.js'
 
@@ -16,27 +16,23 @@ function parseDate(value: string | null | undefined): Date | null {
   return Number.isNaN(d.getTime()) ? null : d
 }
 
-async function ensureProjectAccess(projectId: string, user: AuthUser): Promise<void> {
-  const project = await prisma.project.findFirst({
-    where: { id: projectId, ...notDeleted },
-    select: { tenantId: true },
-  })
-  if (!project) {
-    throw new AppError(404, 'NOT_FOUND', '找不到該專案')
-  }
-  if (user.systemRole !== 'platform_admin' && project.tenantId !== user.tenantId) {
-    throw new AppError(403, 'FORBIDDEN', '無權限操作此專案的工期調整')
-  }
+async function ensureDuration(
+  projectId: string,
+  user: AuthUser,
+  action: 'read' | 'create' | 'update' | 'delete'
+): Promise<void> {
+  await assertCanAccessProject(user, projectId)
+  await assertProjectModuleAction(user, projectId, 'project.duration', action)
 }
 
 export const scheduleAdjustmentService = {
   async list(projectId: string, user: AuthUser): Promise<ScheduleAdjustmentItem[]> {
-    await ensureProjectAccess(projectId, user)
+    await ensureDuration(projectId, user, 'read')
     return scheduleAdjustmentRepository.findManyByProjectId(projectId)
   },
 
   async create(projectId: string, data: CreateScheduleAdjustmentBody, user: AuthUser): Promise<ScheduleAdjustmentItem> {
-    await ensureProjectAccess(projectId, user)
+    await ensureDuration(projectId, user, 'create')
     const applyDate = parseDate(data.applyDate)
     if (!applyDate) {
       throw new AppError(400, 'VALIDATION_ERROR', '申請日期格式錯誤')
@@ -57,7 +53,7 @@ export const scheduleAdjustmentService = {
     data: UpdateScheduleAdjustmentBody,
     user: AuthUser
   ): Promise<ScheduleAdjustmentItem> {
-    await ensureProjectAccess(projectId, user)
+    await ensureDuration(projectId, user, 'update')
     const existing = await scheduleAdjustmentRepository.findById(id)
     if (!existing || existing.projectId !== projectId) {
       throw new AppError(404, 'NOT_FOUND', '找不到該筆工期調整')
@@ -76,7 +72,7 @@ export const scheduleAdjustmentService = {
   },
 
   async delete(projectId: string, id: string, user: AuthUser): Promise<void> {
-    await ensureProjectAccess(projectId, user)
+    await ensureDuration(projectId, user, 'delete')
     const existing = await scheduleAdjustmentRepository.findById(id)
     if (!existing || existing.projectId !== projectId) {
       throw new AppError(404, 'NOT_FOUND', '找不到該筆工期調整')

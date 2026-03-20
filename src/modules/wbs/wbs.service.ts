@@ -1,8 +1,11 @@
 import { prisma } from '../../lib/db.js'
 import { AppError } from '../../shared/errors.js'
 import { notDeleted } from '../../shared/soft-delete.js'
+import { assertCanAccessProject } from '../../shared/project-access.js'
+import { assertProjectModuleAction } from '../project-permission/project-permission.service.js'
 import { wbsRepository, type WbsNodeRecord } from './wbs.repository.js'
 import type { CreateWbsNodeBody, UpdateWbsNodeBody, MoveWbsNodeBody } from '../../schemas/wbs.js'
+import type { PermissionAction } from '../project-permission/project-permission.service.js'
 
 type AuthUser = {
   id: string
@@ -23,15 +26,9 @@ export type WbsNodeTree = {
   children?: WbsNodeTree[]
 }
 
-async function ensureProjectAccess(projectId: string, user: AuthUser): Promise<void> {
-  const project = await prisma.project.findFirst({
-    where: { id: projectId, ...notDeleted },
-    select: { tenantId: true },
-  })
-  if (!project) throw new AppError(404, 'NOT_FOUND', '找不到該專案')
-  if (user.systemRole !== 'platform_admin' && project.tenantId !== user.tenantId) {
-    throw new AppError(403, 'FORBIDDEN', '無權限操作此專案的 WBS')
-  }
+async function ensureWbs(projectId: string, user: AuthUser, action: PermissionAction): Promise<void> {
+  await assertCanAccessProject(user, projectId)
+  await assertProjectModuleAction(user, projectId, 'project.wbs', action)
 }
 
 async function ensureResourceIdsInProject(projectId: string, resourceIds: string[]): Promise<void> {
@@ -137,14 +134,14 @@ async function syncWbsCodesIfNeeded(projectId: string): Promise<void> {
 
 export const wbsService = {
   async list(projectId: string, user: AuthUser): Promise<WbsNodeTree[]> {
-    await ensureProjectAccess(projectId, user)
+    await ensureWbs(projectId, user, 'read')
     await syncWbsCodesIfNeeded(projectId)
     const flat = await wbsRepository.findManyByProjectIdWithResources(projectId)
     return buildTree(flat, null)
   },
 
   async create(projectId: string, body: CreateWbsNodeBody, user: AuthUser): Promise<WbsNodeRecord> {
-    await ensureProjectAccess(projectId, user)
+    await ensureWbs(projectId, user, 'create')
     const rootId = await getProjectRootId(projectId)
     const parentId = body.parentId != null && body.parentId !== '' ? body.parentId : rootId
     {
@@ -182,7 +179,7 @@ export const wbsService = {
   },
 
   async update(projectId: string, id: string, body: UpdateWbsNodeBody, user: AuthUser): Promise<WbsNodeRecord> {
-    await ensureProjectAccess(projectId, user)
+    await ensureWbs(projectId, user, 'update')
     const existing = await wbsRepository.findById(id)
     if (!existing || existing.projectId !== projectId) {
       throw new AppError(404, 'NOT_FOUND', '找不到該 WBS 節點')
@@ -217,7 +214,7 @@ export const wbsService = {
   },
 
   async delete(projectId: string, id: string, user: AuthUser): Promise<void> {
-    await ensureProjectAccess(projectId, user)
+    await ensureWbs(projectId, user, 'delete')
     const existing = await wbsRepository.findById(id)
     if (!existing || existing.projectId !== projectId) {
       throw new AppError(404, 'NOT_FOUND', '找不到該 WBS 節點')
@@ -231,7 +228,7 @@ export const wbsService = {
   },
 
   async move(projectId: string, id: string, body: MoveWbsNodeBody, user: AuthUser): Promise<WbsNodeTree[]> {
-    await ensureProjectAccess(projectId, user)
+    await ensureWbs(projectId, user, 'update')
     const node = await wbsRepository.findById(id)
     if (!node || node.projectId !== projectId) {
       throw new AppError(404, 'NOT_FOUND', '找不到該 WBS 節點')

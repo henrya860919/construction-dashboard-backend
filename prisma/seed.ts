@@ -8,6 +8,8 @@ import 'dotenv/config'
 import { PrismaClient } from '@prisma/client'
 import { PrismaPg } from '@prisma/adapter-pg'
 import bcrypt from 'bcrypt'
+import { PERMISSION_MODULES } from '../src/constants/permission-modules.js'
+import { defaultFlagsByProjectRole } from '../src/modules/project-permission/preset-roles.js'
 
 const connectionString = process.env.DATABASE_URL
 if (!connectionString) {
@@ -97,6 +99,40 @@ async function ensureProjectMember(
   })
 }
 
+/** 既有 DB：補齊尚無 project_member_permissions 的 active 成員（依 ProjectRole 預設） */
+async function backfillProjectMemberPermissions() {
+  const members = await prisma.projectMember.findMany({
+    where: { deletedAt: null, status: 'active' },
+    select: { projectId: true, userId: true, role: true },
+  })
+  let inserted = 0
+  for (const m of members) {
+    const count = await prisma.projectMemberPermission.count({
+      where: { projectId: m.projectId, userId: m.userId },
+    })
+    if (count > 0) continue
+    const flags = defaultFlagsByProjectRole(m.role)
+    await prisma.projectMemberPermission.createMany({
+      data: PERMISSION_MODULES.map((module) => {
+        const f = flags[module]
+        return {
+          projectId: m.projectId,
+          userId: m.userId,
+          module,
+          canCreate: f.canCreate,
+          canRead: f.canRead,
+          canUpdate: f.canUpdate,
+          canDelete: f.canDelete,
+        }
+      }),
+    })
+    inserted += 1
+  }
+  if (inserted > 0) {
+    console.log(`Backfilled project_member_permissions for ${inserted} member(s)`)
+  }
+}
+
 async function main() {
   console.log('Seeding...')
 
@@ -167,6 +203,8 @@ async function main() {
   await ensureProjectMember(proj1.id, member.id, 'member')
   await ensureProjectMember(proj2.id, admin.id, 'project_admin')
   console.log('Project members created')
+
+  await backfillProjectMemberPermissions()
 
   /** 每專案一筆 WBS 專案根（專案名稱層，供統計與階層包絡；不可刪改） */
   for (const p of [proj1, proj2]) {

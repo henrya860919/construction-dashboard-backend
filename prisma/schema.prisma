@@ -20,6 +20,8 @@ model Tenant {
   userLimit        Int?      @map("user_limit")       // 人員上限（未來）
   fileSizeLimitMb  Int?      @map("file_size_limit_mb") // 單筆上傳 MB（未來）
   storageQuotaMb   Int?      @map("storage_quota_mb")   // 總儲存 MB（未來）
+  /// 平台是否已於後台儲存過「模組開通」設定；false 時租戶端視為未開通（全模組不可用，不可新增專案／調整權限）
+  moduleEntitlementsGranted Boolean @default(false) @map("module_entitlements_granted")
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
   deletedAt        DateTime? @map("deleted_at")
@@ -29,8 +31,24 @@ model Tenant {
   projects      Project[]
   formTemplates FormTemplate[]
   selfInspectionTemplates SelfInspectionTemplate[]
+  tenantPermissionTemplates TenantPermissionTemplate[]
+  moduleDisables         TenantModuleDisable[]
 
   @@index([slug])
+}
+
+/// 平台關閉之模組：列于此表示該租戶不可使用該模組（含 tenant_admin）；未列則視為開通
+model TenantModuleDisable {
+  id        String   @id @default(cuid())
+  tenantId  String   @map("tenant_id")
+  module    String   @map("module") // PermissionModuleId
+  createdAt DateTime @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, module])
+  @@index([tenantId])
+  @@map("tenant_module_disables")
 }
 
 // ---------- 人員（使用者）----------
@@ -67,6 +85,8 @@ model User {
   defectExecutionRecords   DefectExecutionRecord[]
   repairExecutionRecords   RepairExecutionRecord[]
   selfInspectionRecordsFilled SelfInspectionRecord[]
+  tenantPermissionTemplates   TenantPermissionTemplate[]
+  projectMemberPermissions    ProjectMemberPermission[]
 
   @@index([email])
 }
@@ -372,6 +392,7 @@ model Project {
   selfInspectionRecords                 SelfInspectionRecord[]
   projectSelfInspectionTemplateLinks    ProjectSelfInspectionTemplateLink[]
   drawingNodes                          DrawingNode[]
+  projectMemberPermissions              ProjectMemberPermission[]
 }
 
 // ---------- 圖說管理（專案內樹狀：folder=分類、leaf=圖說項；版本用 Attachment category=drawing_revision, businessId=leafId）----------
@@ -609,6 +630,48 @@ model ProjectMember {
 
   @@index([projectId, userId])
   @@map("project_members")
+}
+
+// ---------- 租戶層：成員權限範本（加入專案時複製至 project_member_permissions）----------
+model TenantPermissionTemplate {
+  id        String   @id @default(cuid())
+  tenantId  String   @map("tenant_id")
+  userId    String   @map("user_id")
+  module    String   @map("module") // 如 project.overview、construction.defect
+  canCreate Boolean  @default(false) @map("can_create")
+  canRead   Boolean  @default(false) @map("can_read")
+  canUpdate Boolean  @default(false) @map("can_update")
+  canDelete Boolean  @default(false) @map("can_delete")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, userId, module])
+  @@index([tenantId, userId])
+  @@map("tenant_permission_templates")
+}
+
+// ---------- 專案層：成員模組權限（可覆寫範本）----------
+model ProjectMemberPermission {
+  id        String   @id @default(cuid())
+  projectId String   @map("project_id")
+  userId    String   @map("user_id")
+  module    String   @map("module")
+  canCreate Boolean  @default(false) @map("can_create")
+  canRead   Boolean  @default(false) @map("can_read")
+  canUpdate Boolean  @default(false) @map("can_update")
+  canDelete Boolean  @default(false) @map("can_delete")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, userId, module])
+  @@index([projectId, userId])
+  @@map("project_member_permissions")
 }
 
 // ---------- 攝影機（專案級，go2rtc 推流；一機一 Token）----------

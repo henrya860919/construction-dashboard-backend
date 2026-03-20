@@ -1,6 +1,6 @@
 import { AppError } from '../../shared/errors.js'
-import { notDeleted } from '../../shared/soft-delete.js'
-import { prisma } from '../../lib/db.js'
+import { assertCanAccessProject } from '../../shared/project-access.js'
+import { assertProjectModuleAction } from '../project-permission/project-permission.service.js'
 import { albumRepository, type AlbumRecord } from './album.repository.js'
 import { fileRepository, type AttachmentRecord } from '../file/file.repository.js'
 
@@ -10,19 +10,9 @@ type AuthUser = {
   tenantId: string | null
 }
 
-async function ensureUserCanAccessProject(
-  projectId: string,
-  userId: string,
-  isPlatformAdmin: boolean
-): Promise<void> {
-  if (isPlatformAdmin) return
-  const member = await prisma.projectMember.findFirst({
-    where: { projectId, userId, ...notDeleted },
-    select: { status: true },
-  })
-  if (!member || member.status !== 'active') {
-    throw new AppError(403, 'FORBIDDEN', '非專案成員或已停用，無法存取此專案')
-  }
+async function ensurePhoto(projectId: string, user: AuthUser, action: 'read' | 'create' | 'update' | 'delete'): Promise<void> {
+  await assertCanAccessProject(user, projectId)
+  await assertProjectModuleAction(user, projectId, 'construction.photo', action)
 }
 
 export type AlbumPhotoItem = AttachmentRecord & {
@@ -31,7 +21,7 @@ export type AlbumPhotoItem = AttachmentRecord & {
 
 export const albumService = {
   async listAlbums(projectId: string, userId: string, user: AuthUser): Promise<AlbumRecord[]> {
-    await ensureUserCanAccessProject(projectId, userId, user.systemRole === 'platform_admin')
+    await ensurePhoto(projectId, user, 'read')
     return albumRepository.findByProjectId(projectId)
   },
 
@@ -41,7 +31,7 @@ export const albumService = {
     userId: string,
     user: AuthUser
   ): Promise<AlbumRecord> {
-    await ensureUserCanAccessProject(projectId, userId, user.systemRole === 'platform_admin')
+    await ensurePhoto(projectId, user, 'create')
     const trimmed = name.trim()
     if (!trimmed) {
       throw new AppError(400, 'VALIDATION_ERROR', '相簿名稱為必填')
@@ -58,7 +48,7 @@ export const albumService = {
     if (!album) {
       throw new AppError(404, 'NOT_FOUND', '找不到該相簿')
     }
-    await ensureUserCanAccessProject(album.projectId, userId, user.systemRole === 'platform_admin')
+    await ensurePhoto(album.projectId, user, 'delete')
     await albumRepository.delete(albumId, userId)
   },
 
@@ -71,7 +61,7 @@ export const albumService = {
     if (!album) {
       throw new AppError(404, 'NOT_FOUND', '找不到該相簿')
     }
-    await ensureUserCanAccessProject(album.projectId, userId, user.systemRole === 'platform_admin')
+    await ensurePhoto(album.projectId, user, 'read')
     const attachmentIds = await albumRepository.getAttachmentIds(albumId)
     if (attachmentIds.length === 0) {
       return []
@@ -104,7 +94,7 @@ export const albumService = {
     if (!album) {
       throw new AppError(404, 'NOT_FOUND', '找不到該相簿')
     }
-    await ensureUserCanAccessProject(album.projectId, userId, user.systemRole === 'platform_admin')
+    await ensurePhoto(album.projectId, user, 'create')
     const attachment = await fileRepository.findById(attachmentId)
     if (!attachment) {
       throw new AppError(404, 'NOT_FOUND', '找不到該檔案')
@@ -125,7 +115,7 @@ export const albumService = {
     if (!album) {
       throw new AppError(404, 'NOT_FOUND', '找不到該相簿')
     }
-    await ensureUserCanAccessProject(album.projectId, userId, user.systemRole === 'platform_admin')
+    await ensurePhoto(album.projectId, user, 'delete')
     await albumRepository.removePhoto(albumId, attachmentId)
   },
 }

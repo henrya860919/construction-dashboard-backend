@@ -1,5 +1,13 @@
 import type { AlertLevel } from '../../types/alerts.js'
+import { assertCanAccessProject } from '../../shared/project-access.js'
+import { assertProjectModuleAction } from '../project-permission/project-permission.service.js'
 import { alertsRepository } from './alerts.repository.js'
+
+type AlertsAuthUser = {
+  id: string
+  systemRole: 'platform_admin' | 'tenant_admin' | 'project_user'
+  tenantId: string | null
+}
 
 export type AlertItemDto = {
   id: string
@@ -28,9 +36,14 @@ let lastSyncAt = 0
  * 取得目前有效警報（30 分鐘內有發生的才顯示）。
  * 會先從政府資料（目前為假資料）同步到 DB，再回傳 lastSeenAt 在 30 分鐘內的紀錄。
  */
-export async function getCurrentAlerts(projectId?: string | null): Promise<AlertItemDto[]> {
+export async function getCurrentAlerts(projectId: string | null | undefined, user: AlertsAuthUser): Promise<AlertItemDto[]> {
   const now = Date.now()
   const projId = projectId ?? null
+
+  if (projId) {
+    await assertCanAccessProject(user, projId)
+    await assertProjectModuleAction(user, projId, 'construction.monitor', 'read')
+  }
 
   if (now - lastSyncAt >= SYNC_THROTTLE_MS) {
     lastSyncAt = now
@@ -70,12 +83,18 @@ export async function getCurrentAlerts(projectId?: string | null): Promise<Alert
  */
 export async function getAlertHistory(params: {
   projectId?: string | null
+  user: AlertsAuthUser
   startDate: Date
   endDate: Date
   limit?: number
 }): Promise<Array<AlertItemDto & { createdAt: string }>> {
+  const projId = params.projectId ?? null
+  if (projId) {
+    await assertCanAccessProject(params.user, projId)
+    await assertProjectModuleAction(params.user, projId, 'construction.monitor', 'read')
+  }
   const rows = await alertsRepository.findHistoryByDateRange({
-    projectId: params.projectId ?? null,
+    projectId: projId,
     startDate: params.startDate,
     endDate: params.endDate,
     limit: params.limit,

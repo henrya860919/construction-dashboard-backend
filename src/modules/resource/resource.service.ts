@@ -1,6 +1,6 @@
-import { prisma } from '../../lib/db.js'
 import { AppError } from '../../shared/errors.js'
-import { notDeleted } from '../../shared/soft-delete.js'
+import { assertCanAccessProject } from '../../shared/project-access.js'
+import { assertProjectModuleAction } from '../project-permission/project-permission.service.js'
 import { resourceRepository, type ProjectResourceRecord } from './resource.repository.js'
 import type {
   CreateProjectResourceBody,
@@ -13,15 +13,13 @@ type AuthUser = {
   tenantId: string | null
 }
 
-async function ensureProjectAccess(projectId: string, user: AuthUser): Promise<void> {
-  const project = await prisma.project.findFirst({
-    where: { id: projectId, ...notDeleted },
-    select: { tenantId: true },
-  })
-  if (!project) throw new AppError(404, 'NOT_FOUND', '找不到該專案')
-  if (user.systemRole !== 'platform_admin' && project.tenantId !== user.tenantId) {
-    throw new AppError(403, 'FORBIDDEN', '無權限操作此專案的資源')
-  }
+async function ensureResource(
+  projectId: string,
+  user: AuthUser,
+  action: 'read' | 'create' | 'update' | 'delete'
+): Promise<void> {
+  await assertCanAccessProject(user, projectId)
+  await assertProjectModuleAction(user, projectId, 'project.resource', action)
 }
 
 const VALID_TYPES = ['labor', 'equipment', 'material'] as const
@@ -38,7 +36,7 @@ export const resourceService = {
     type: string,
     user: AuthUser
   ): Promise<ProjectResourceRecord[]> {
-    await ensureProjectAccess(projectId, user)
+    await ensureResource(projectId, user, 'read')
     assertValidType(type)
     return resourceRepository.findManyByProjectAndType(projectId, type)
   },
@@ -48,7 +46,7 @@ export const resourceService = {
     body: CreateProjectResourceBody,
     user: AuthUser
   ): Promise<ProjectResourceRecord> {
-    await ensureProjectAccess(projectId, user)
+    await ensureResource(projectId, user, 'create')
     return resourceRepository.create({
       projectId,
       type: body.type,
@@ -68,7 +66,7 @@ export const resourceService = {
     body: UpdateProjectResourceBody,
     user: AuthUser
   ): Promise<ProjectResourceRecord> {
-    await ensureProjectAccess(projectId, user)
+    await ensureResource(projectId, user, 'update')
     const existing = await resourceRepository.findById(id)
     if (!existing || existing.projectId !== projectId) {
       throw new AppError(404, 'NOT_FOUND', '找不到該資源')
@@ -91,7 +89,7 @@ export const resourceService = {
   },
 
   async delete(projectId: string, id: string, user: AuthUser): Promise<void> {
-    await ensureProjectAccess(projectId, user)
+    await ensureResource(projectId, user, 'delete')
     const existing = await resourceRepository.findById(id)
     if (!existing || existing.projectId !== projectId) {
       throw new AppError(404, 'NOT_FOUND', '找不到該資源')

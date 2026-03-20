@@ -1,0 +1,14 @@
+---
+description: 專案內 RBAC 模組權限—新增功能時如何註冊模組並串接後端／前端
+---
+
+# 專案模組權限（開發時必讀）
+
+新增或修改**專案內**功能時：
+
+1. 詳細步驟與動作對照見 **`docs/project-module-permissions.md`**。
+2. 新功能若要出現在租戶／專案**權限矩陣**，必須把 `moduleId` 加入**後端與前端**的 `PERMISSION_MODULES`，並以 **migration 補齊既有列**（不可只改常數）。
+3. 後端：在對應 **service** 方法使用 `assertProjectModuleAction(user, projectId, moduleId, action)`；禁止只做租戶比對而略過模組。
+4. 前端：專案內頁用 **`useProjectPermission(projectId)`** 的 `can(module, action)` 控制按鈕／區塊；新路由的 path 後綴須加入 `NAV_PATH_PERMISSION_MODULE`（與側欄 `pathSuffix` 一致）。
+
+**租戶模組開通**（`tenant_module_disables`）先於細粒度：關閉之模組對該租戶所有人（含 `tenant_admin`）不可用；`platform_admin` 不檢查開通。通過後，`platform_admin`／`tenant_admin` 略過 `project_member_permissions`。前端：`platform_admin` 在 `useProjectPermission` 視為全開；`tenant_admin` 依 `my-permissions` store（已遮罩）。

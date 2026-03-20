@@ -2,8 +2,8 @@ import crypto from 'node:crypto'
 import archiver from 'archiver'
 import { Writable } from 'node:stream'
 import { AppError } from '../../shared/errors.js'
-import { prisma } from '../../lib/db.js'
-import { notDeleted } from '../../shared/soft-delete.js'
+import { assertCanAccessProject } from '../../shared/project-access.js'
+import { assertProjectModuleAction } from '../project-permission/project-permission.service.js'
 import { projectRepository } from '../project/project.repository.js'
 import { cameraRepository, type CameraRecord } from './camera.repository.js'
 import { encryption } from '../../lib/encryption.js'
@@ -58,19 +58,13 @@ type AuthUser = {
   tenantId: string | null
 }
 
-async function ensureUserCanAccessProject(
+async function ensureEquipment(
   projectId: string,
-  userId: string,
-  isPlatformAdmin: boolean
+  user: AuthUser,
+  action: 'read' | 'create' | 'update' | 'delete'
 ): Promise<void> {
-  if (isPlatformAdmin) return
-  const member = await prisma.projectMember.findFirst({
-    where: { projectId, userId, ...notDeleted },
-    select: { status: true },
-  })
-  if (!member || member.status !== 'active') {
-    throw new AppError(403, 'FORBIDDEN', '非專案成員或已停用，無法存取此專案攝影機')
-  }
+  await assertCanAccessProject(user, projectId)
+  await assertProjectModuleAction(user, projectId, 'construction.equipment', action)
 }
 
 function maskSourceUrl(url: string): string {
@@ -134,7 +128,7 @@ export const cameraService = {
     userId: string,
     user: AuthUser
   ): Promise<CameraRecord> {
-    await ensureUserCanAccessProject(projectId, userId, user.systemRole === 'platform_admin')
+    await ensureEquipment(projectId, user, 'create')
     const project = await projectRepository.findById(projectId)
     if (!project) throw new AppError(404, 'NOT_FOUND', '找不到該專案')
 
@@ -237,7 +231,7 @@ export const cameraService = {
       }
     >
   > {
-    await ensureUserCanAccessProject(projectId, userId, user.systemRole === 'platform_admin')
+    await ensureEquipment(projectId, user, 'read')
     const cameras = await cameraRepository.findByProjectId(projectId)
     const readyTokens = await this.getReadyStreamTokens()
     return this.resolveConnectionStatus(cameras, readyTokens)
@@ -260,7 +254,7 @@ export const cameraService = {
       usernameMasked?: string
     }
   > {
-    await ensureUserCanAccessProject(projectId, userId, user.systemRole === 'platform_admin')
+    await ensureEquipment(projectId, user, 'read')
     const row = await cameraRepository.findByIdWithSourceEnc(cameraId)
     if (!row) throw new AppError(404, 'NOT_FOUND', '找不到該攝影機')
     if (row.projectId !== projectId) throw new AppError(404, 'NOT_FOUND', '找不到該攝影機')
@@ -285,7 +279,7 @@ export const cameraService = {
   },
 
   async getByIdWithSourceUrlDecrypted(cameraId: string, projectId: string, userId: string, user: AuthUser) {
-    await ensureUserCanAccessProject(projectId, userId, user.systemRole === 'platform_admin')
+    await ensureEquipment(projectId, user, 'read')
     const row = await cameraRepository.findByIdWithSourceEnc(cameraId)
     if (!row) throw new AppError(404, 'NOT_FOUND', '找不到該攝影機')
     if (row.projectId !== projectId) throw new AppError(404, 'NOT_FOUND', '找不到該攝影機')
@@ -305,7 +299,7 @@ export const cameraService = {
     userId: string,
     user: AuthUser
   ): Promise<CameraRecord> {
-    await ensureUserCanAccessProject(projectId, userId, user.systemRole === 'platform_admin')
+    await ensureEquipment(projectId, user, 'update')
     const camera = await cameraRepository.findById(cameraId)
     if (!camera) throw new AppError(404, 'NOT_FOUND', '找不到該攝影機')
     if (camera.projectId !== projectId) throw new AppError(404, 'NOT_FOUND', '找不到該攝影機')
@@ -364,7 +358,7 @@ export const cameraService = {
   },
 
   async delete(cameraId: string, projectId: string, userId: string, user: AuthUser): Promise<void> {
-    await ensureUserCanAccessProject(projectId, userId, user.systemRole === 'platform_admin')
+    await ensureEquipment(projectId, user, 'delete')
     const camera = await cameraRepository.findById(cameraId)
     if (!camera) throw new AppError(404, 'NOT_FOUND', '找不到該攝影機')
     if (camera.projectId !== projectId) throw new AppError(404, 'NOT_FOUND', '找不到該攝影機')
@@ -384,7 +378,7 @@ export const cameraService = {
     userId: string,
     user: AuthUser
   ): Promise<CameraRecord> {
-    await ensureUserCanAccessProject(projectId, userId, user.systemRole === 'platform_admin')
+    await ensureEquipment(projectId, user, 'update')
     const camera = await cameraRepository.findById(cameraId)
     if (!camera) throw new AppError(404, 'NOT_FOUND', '找不到該攝影機')
     if (camera.projectId !== projectId) throw new AppError(404, 'NOT_FOUND', '找不到該攝影機')
@@ -392,7 +386,7 @@ export const cameraService = {
   },
 
   async getPlayUrl(cameraId: string, projectId: string, userId: string, user: AuthUser) {
-    await ensureUserCanAccessProject(projectId, userId, user.systemRole === 'platform_admin')
+    await ensureEquipment(projectId, user, 'read')
     const camera = await cameraRepository.findById(cameraId)
     if (!camera) throw new AppError(404, 'NOT_FOUND', '找不到該攝影機')
     if (camera.projectId !== projectId) throw new AppError(404, 'NOT_FOUND', '找不到該攝影機')
@@ -407,7 +401,7 @@ export const cameraService = {
   },
 
   async getInstallConfig(cameraId: string, projectId: string, userId: string, user: AuthUser) {
-    await ensureUserCanAccessProject(projectId, userId, user.systemRole === 'platform_admin')
+    await ensureEquipment(projectId, user, 'read')
     const camera = await cameraRepository.findById(cameraId)
     if (!camera) throw new AppError(404, 'NOT_FOUND', '找不到該攝影機')
     if (camera.projectId !== projectId) throw new AppError(404, 'NOT_FOUND', '找不到該攝影機')
@@ -447,7 +441,7 @@ streams:
     userId: string,
     user: AuthUser
   ): Promise<{ streamToken: string; rtmpPublishUrl: string; sourceUrl: string | null }> {
-    await ensureUserCanAccessProject(projectId, userId, user.systemRole === 'platform_admin')
+    await ensureEquipment(projectId, user, 'update')
     const camera = await cameraRepository.findByIdWithSourceEnc(cameraId)
     if (!camera) throw new AppError(404, 'NOT_FOUND', '找不到該攝影機')
     if (camera.projectId !== projectId) throw new AppError(404, 'NOT_FOUND', '找不到該攝影機')
@@ -490,7 +484,7 @@ ${streamLine}
    * 產出專案層級 go2rtc.yaml（含此專案所有攝影機的 stream；每次下載為當前最新 token）
    */
   async getInstallYamlContentForProject(projectId: string, userId: string, user: AuthUser): Promise<string> {
-    await ensureUserCanAccessProject(projectId, userId, user.systemRole === 'platform_admin')
+    await ensureEquipment(projectId, user, 'update')
     const { host: hostForRtmp, port: rtmpPort } = getRtmpPublishHostAndPort()
     const rows = await cameraRepository.findByProjectIdWithSourceEnc(projectId)
     if (rows.length === 0) {
