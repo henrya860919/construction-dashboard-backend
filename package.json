@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "postinstall": "prisma generate",
+    "predev": "prisma generate",
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
@@ -30,6 +31,7 @@
     "dotenv": "^17.3.1",
     "express": "^4.21.1",
     "express-rate-limit": "^8.3.1",
+    "fast-xml-parser": "^5.5.8",
     "helmet": "^8.1.0",
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.1.1",

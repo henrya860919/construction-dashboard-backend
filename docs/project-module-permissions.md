@@ -18,14 +18,21 @@
 |------|------|------|
 | 1 | `src/constants/permission-modules.ts`（後端） | 在 `PERMISSION_MODULES` 陣列加入新 `moduleId`（點號命名，如 `construction.xxx`）。 |
 | 2 | `src/constants/permission-modules.ts`（前端） | **同一順序、同一清單**；更新 `NAV_PATH_PERMISSION_MODULE`（專案內 path 後綴 → 模組）、`PERMISSION_MODULE_LABELS`（後台／矩陣顯示名）。 |
-| 3 | Prisma migration | 為既有 `tenant_permission_templates`／`project_member_permissions` **補列**新模組（可複製鄰近模組旗標，見 `20260322120000_add_project_members_module`）；勿只改常數不補 DB。 |
+| 3 | Prisma migration | 為既有 `tenant_permission_templates`／`project_member_permissions` **補列**新模組（可複製鄰近模組旗標，見 `20260322120000_add_project_members_module`、`20260322170000_add_construction_pcces_module`）；勿只改常數不補 DB。 |
 | 4 | `src/schemas/project-permission.ts` | `replacePermissionModulesSchema` 由 `PERMISSION_MODULES` 驅動，通常**不需手改**，確認編譯通過即可。 |
 | 5 | `preset-roles.ts` | 若 preset 需特例，更新 `PRESET_TEMPLATES`／`defaultFlagsByProjectRole` 語意。 |
 | 6 | 後端業務 Service | 每個對外方法開頭：`await assertProjectModuleAction(user, projectId, '<moduleId>', '<action>')`（內含准入與租戶開通；`platform_admin` 僅略過開通後之細粒度）。 |
 | 7 | `docs/backend-prisma-api.md` | 簡述新模組守護的 API（若屬 3.7 範圍）。 |
-| 8 | 前端路由 | `useProjectRoutePermissionGuard` 已依 `NAV_PATH_PERMISSION_MODULE` 擋無 `read` 者；新 path **必須**掛上對應鍵。 |
+| 8 | 前端路由 | `useProjectRoutePermissionGuard` 已依 `NAV_PATH_PERMISSION_MODULE` 擋無 `read` 者；新 path **必須**掛上對應鍵（含子路徑時確認 `resolvePermissionPathSuffix` 能對應到已登記鍵）。 |
 | 9 | `navigation.ts` | 側欄／Layer2／Layer3 新連結的 `pathSuffix` 與步驟 2 一致。 |
 | 10 | 頁面與按鈕 | 使用 `useProjectPermission(projectId)` 的 `can(moduleId, action)`，與後端動作一致；**勿**以 `tenant_admin` 前端短路為全開（應依 `my-permissions` store）。 |
+
+**以下 UI 皆由 `PERMISSION_MODULES`＋`PERMISSION_MODULE_LABELS` 驅動，新增模組並補 migration 後即會出現；無需逐頁硬編清單，但必須完成步驟 1～3、8：**
+
+- 平台方：**`PlatformTenantManageView`** 租戶「模組開通」勾選表
+- 租戶後台：**`AdminTenantInfoView`** 唯讀模組開通狀態
+- 租戶後台：**`AdminMembersView`** 成員權限範本矩陣（`PermissionMatrixForm`）
+- 專案內：**`ProjectMembersView`** 成員模組覆寫矩陣
 
 ---
 
@@ -56,6 +63,7 @@
 |------------|----------|
 | `drawing_revision` | `project.drawings` |
 | `photo`（圖庫／影像管理，常數 `FILE_CATEGORY_PHOTO`） | `construction.photo` |
+| `pcces_xml`（PCCES XML 歸檔，常數 `FILE_CATEGORY_PCCES_XML`） | `construction.pcces` |
 | 其他或 `null` | `construction.upload` |
 
 ---

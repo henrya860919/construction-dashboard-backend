@@ -45,7 +45,13 @@ export const PRESET_TEMPLATES: Record<
   project_engineer: () => allFull(),
   site_supervisor: () => {
     const base = allReadOnly()
-    const full = ['construction.inspection', 'construction.defect', 'construction.diary', 'construction.photo'] as const
+    const full = [
+      'construction.inspection',
+      'construction.defect',
+      'construction.diary',
+      'construction.pcces',
+      'construction.photo',
+    ] as const
     for (const m of full) {
       base[m] = { canCreate: true, canRead: true, canUpdate: true, canDelete: true }
     }

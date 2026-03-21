@@ -5,6 +5,9 @@
 /** 影像管理／圖庫（對應權限模組 `construction.photo`） */
 export const FILE_CATEGORY_PHOTO = 'photo'
 
+/** PCCES／eTender XML 歸檔（對應權限模組 `construction.pcces`） */
+export const FILE_CATEGORY_PCCES_XML = 'pcces_xml'
+
 export const CHUNKED_UPLOAD_THRESHOLD_BYTES = 5 * 1024 * 1024 // 5MB
 export const CHUNKED_UPLOAD_MAX_TOTAL_BYTES = 50 * 1024 * 1024 // 50MB
 export const CHUNKED_UPLOAD_CHUNK_SIZE = 2 * 1024 * 1024 // 2MB

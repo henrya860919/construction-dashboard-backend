@@ -43,7 +43,31 @@
 - 先用本機儲存（測試）：`FILE_STORAGE_TYPE=local`，並設 `FILE_STORAGE_LOCAL_PATH=./storage`（Railway 重啟會清空，僅適合測試）。
 - 正式建議用 R2：完成下方「三、Cloudflare R2」後，設 `FILE_STORAGE_TYPE=r2` 及所有 `R2_*` 變數。
 
-### 1.4 部署與 Migration
+### 1.4 CORS_ORIGIN 要填哪些網址？
+
+後端用 `CORS_ORIGIN` 決定「允許哪些前端網址」打 API。**只填你「會用來開正式前端的網址」**即可。
+
+| 網址類型 | 要不要填進 CORS_ORIGIN？ | 說明 |
+|----------|--------------------------|------|
+| **正式／主要網址**（例如 `construction-dashboard-frontend-ust.vercel.app`） | ✅ **要** | 使用者或你平常開的網址，一定要填。 |
+| **Vercel 預設 Production 網址**（專案名.vercel.app） | ✅ **要** | 若這是你的正式入口，就填。 |
+| **Preview 網址**（含 `-git-xxx-`、`-xxx-1234.vercel.app` 等） | ❌ 一般不填 | 每次 PR／分支都會變，不適合一個個加；預覽請用本機或只連測試後端。 |
+
+**填法**：在 Railway 後端 Variables 的 `CORS_ORIGIN` 填**一個**正式前端網址，例如：
+
+```text
+https://construction-dashboard-frontend-ust.vercel.app
+```
+
+若有**兩個固定**網址（例如正式 + 一個固定預覽），用**逗號**分隔，不要加空白：
+
+```text
+https://construction-dashboard-frontend-ust.vercel.app,https://另一個.vercel.app
+```
+
+**記得加 `https://`**，且**不要**在結尾加 `/`。
+
+### 1.5 部署與 Migration
 
 1. 儲存 Variables 後，Railway 會自動重新部署。
 2. 部署完成後，到後端服務 **Settings** 或 **Deployments**，可開啟 **Shell**（或用 Railway CLI）執行：
@@ -53,7 +77,7 @@
    若 Railway 專案有提供 one-off run，也可用 **Run Command** 執行上述指令。
 3. 執行成功後，後端 API 即就緒。在 **Settings** → **Networking** 可產生 **Public URL**（例如 `https://xxx.railway.app`），此即後端 API 根網址，稍後給 Vercel 的 `VITE_API_URL` 使用。
 
-### 1.5 小結
+### 1.6 小結
 
 - 後端服務從 **prod** 分支部署，根目錄有 `nixpacks.toml` 時會自動執行 `prisma generate` 與 `npm run build`。
 - 務必設定 `DATABASE_URL`、`JWT_SECRET`、`JWT_REFRESH_SECRET`、`CORS_ORIGIN`、`ENCRYPTION_KEY`（生產環境必設）。
@@ -151,12 +175,69 @@
 
 ---
 
-## 五、後續：攝影機串流（mediamtx）
+## 五、在 Railway 架設 mediamtx（攝影機串流）
 
-若正式環境要啟用攝影機即時串流，需另外部署 **mediamtx**（可與 Backend 同機或獨立主機），並在 Railway 後端設定：
+若正式環境要啟用攝影機即時串流，可在 **同一個 Railway 專案** 裡新增一個 **mediamtx 服務**，與 Backend 並存，透過內網互相連線。
 
-- `MEDIAMTX_API_URL`：Backend 能連到的 mediamtx API（例如同機 `http://127.0.0.1:9997` 或他機內網位址）。
-- `MEDIAMTX_PUBLIC_HOST`：對外 WebRTC/RTMP 的 https 網址（供前端與現場 go2rtc 連線）。
+### 5.1 架構說明
+
+- **Backend 服務**：照現有方式部署（Node + Express），對外只暴露 API（例如 `https://xxx.railway.app`）。
+- **mediamtx 服務**：跑官方 Docker 映像 `bluenviron/mediamtx`，對外只暴露 **8889**（WebRTC 播放）；**9997**（API）與 **8554**（RTSP 推流）僅供 Backend 與現場 go2rtc 透過 Railway 內網／公網連線。推流改為 RTSP 可避免雲端 RTMP AVCC 解析錯誤。
+- Backend 用 **內網網址** 呼叫 mediamtx API（`MEDIAMTX_API_URL`），前端與現場安裝包用 **mediamtx 的對外網址** 播放／推流（`MEDIAMTX_PUBLIC_HOST`）。
+
+### 5.2 在專案中新增 mediamtx 服務
+
+請先確認 **prod 分支** 已包含 `docker/mediamtx/Dockerfile`（若剛新增，請 `git add`、`git commit`、`git push origin prod`）。
+
+1. **同一個 Railway 專案** 內，點 **+ New** → **GitHub Repo**。
+2. 選 **同一個 repo**（construction-dashboard-backend），**Branch** 選 **prod**。
+3. 在 **Settings**（或建立時的進階選項）中設定 **Root Directory** 為 **`docker/mediamtx`**。如此 Railway 會以該目錄為根目錄建置，並使用目錄內的 `Dockerfile`（`FROM bluenviron/mediamtx`）。
+4. **Build Command**、**Start Command** 留空即可（由 Docker 映像內建）。
+5. 儲存後觸發一次 **Deploy**，確認 mediamtx 服務建置並啟動成功。
+
+### 5.3 設定 mediamtx 服務的 Port
+
+Railway 預設會偵測容器開的 port；若沒有，需手動指定「對外要暴露的 port」：
+
+1. 點進 **mediamtx 服務** → **Settings** → **Networking**（或 **Deploy** 區塊的 Port 設定）。
+2. 將 **Public Networking** 的 **Port** 設為 **8889**（mediamtx 的 WebRTC 預設埠）。
+3. 部署完成後，Railway 會給此服務一個對外網址，例如 `https://mediamtx-xxx.up.railway.app`（實際以 Railway 顯示為準）。
+
+### 5.4 取得內網網址（給 Backend 用）
+
+1. 在 mediamtx 服務的 **Settings** → **Networking**（或 **Variables**）可看到 **Private Network** 的 hostname，格式通常為 **`<服務名稱>.railway.internal`**（服務名稱可在 Settings 頂部看到，例如 `mediamtx`）。
+2. Backend 要連的是 **API**（port **9997**），所以內網完整 URL 為：
+   ```text
+   http://<mediamtx 服務名稱>.railway.internal:9997
+   ```
+   例如：`http://mediamtx.railway.internal:9997`（若服務名稱為 `mediamtx`）。
+
+### 5.5 後端（Backend）環境變數
+
+在 **Backend 服務** 的 **Variables** 中新增或修改：
+
+| 變數 | 值 | 說明 |
+|------|-----|------|
+| `MEDIAMTX_API_URL` | `http://<mediamtx 服務名稱>.railway.internal:9997` | Backend 呼叫 mediamtx API 的內網網址（見 5.4）。 |
+| `MEDIAMTX_PUBLIC_HOST` | `https://mediamtx-xxx.up.railway.app` | mediamtx 的 **對外** URL，供**前端 WebRTC 播放**用（見 5.3）。 |
+| `MEDIAMTX_RTMP_PUBLIC_URL` | `rtmp://xxx.proxy.rlwy.net:1935`（依你畫面上的 TCP Proxy 為準） | **選填**。Railway 加 TCP Proxy（port **1935**）後會給一組專用網址，填在這裡（含 `rtmp://` 與 port），安裝包內的 go2rtc 推流 URL 才會正確；go2rtc publish 僅支援 RTMP/RTMPS。 |
+
+存檔後 Backend 會重新部署；若沒有，可手動 **Redeploy** 一次。
+
+### 5.6 RTMP（現場 go2rtc 推流）說明
+
+- **WebRTC（8889）**：已透過 mediamtx 的 Public URL 對外開放，前端與瀏覽器可正常播放。
+- **RTMP（1935）**：現場 go2rtc 以 **RTMP** 推流至 mediamtx（go2rtc publish 不支援外網 RTSP）。AVCC 解析錯誤請用 **ffmpeg:** source 解決。Railway 需對外開 **1935**。
+  - **做法一（建議）**：在 mediamtx 服務的 **Settings → Networking** 加 **+ TCP Proxy**，對外 port 選 **1935**、對應容器 **1935**。Railway 會給一組專用位址（如 `xxx.proxy.rlwy.net:12345`）。在 Backend 的 **Variables** 新增 **`MEDIAMTX_RTMP_PUBLIC_URL`** = `rtmp://xxx.proxy.rlwy.net:12345`（含 `rtmp://` 與實際 port）。之後重新下載的安裝包內 go2rtc 推流 URL 會變成 `rtmp://xxx.proxy.rlwy.net:12345/<token>`。
+  - **做法二**：若暫時不需現場推流，可先不開 1935，僅用 WebRTC 播放；待有需要時再改用 VPS 獨立部署 mediamtx（見 **production-release-checklist.md**）。
+
+### 5.7 驗收
+
+1. 在 Dashboard 建立一臺攝影機（會呼叫 mediamtx API 新增 path）。
+2. 若回傳 **503** 且訊息為「串流服務無法連線…」，表示 Backend 連不到 mediamtx，請檢查：
+   - mediamtx 服務是否已成功部署、
+   - `MEDIAMTX_API_URL` 是否為內網 `http://<服務名>.railway.internal:9997`。
+3. 前端到專案內「監測 → 設備／影像」取得播放連結，應可連到 `MEDIAMTX_PUBLIC_HOST` 的 WebRTC 端點。
 
 詳細架構與檢查清單見 **production-release-checklist.md**、**production-environment-planning.md**。
 

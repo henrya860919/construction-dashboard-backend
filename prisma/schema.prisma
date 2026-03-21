@@ -87,6 +87,8 @@ model User {
   selfInspectionRecordsFilled SelfInspectionRecord[]
   tenantPermissionTemplates   TenantPermissionTemplate[]
   projectMemberPermissions    ProjectMemberPermission[]
+  pccesImportsCreated         PccesImport[]              @relation("PccesImportCreatedBy")
+  constructionDailyLogsCreated ConstructionDailyLog[]     @relation("ConstructionDailyLogCreatedBy")
 
   @@index([email])
 }
@@ -330,6 +332,7 @@ model Attachment {
   uploadedBy       User                 @relation(fields: [uploadedById], references: [id], onDelete: Cascade)
   albumPhotos      AlbumPhoto[]
   userPhotoFavorites UserPhotoFavorite[]
+  pccesImports     PccesImport[]
 
   @@map("attachments")
 }
@@ -393,6 +396,8 @@ model Project {
   projectSelfInspectionTemplateLinks    ProjectSelfInspectionTemplateLink[]
   drawingNodes                          DrawingNode[]
   projectMemberPermissions              ProjectMemberPermission[]
+  pccesImports                          PccesImport[]
+  constructionDailyLogs                 ConstructionDailyLog[]
 }
 
 // ---------- 圖說管理（專案內樹狀：folder=分類、leaf=圖說項；版本用 Attachment category=drawing_revision, businessId=leafId）----------
@@ -518,6 +523,177 @@ model ProjectResource {
   @@index([projectId])
   @@index([projectId, type])
   @@map("project_resources")
+}
+
+// ---------- PCCES 匯入（施工日誌工項來源；每次上傳為一版）----------
+model PccesImport {
+  id             String    @id @default(cuid())
+  projectId      String    @map("project_id")
+  version        Int       // 專案內從 1 遞增
+  documentType   String?   @map("document_type") // budget | contract 等，來自 XML
+  fileName       String    @map("file_name")
+  attachmentId   String?   @map("attachment_id") // 原始 XML 歸檔（選用）
+  itemCount      Int       @default(0) @map("item_count")
+  generalCount   Int       @default(0) @map("general_count")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  createdById    String    @map("created_by_id")
+  deletedAt      DateTime? @map("deleted_at")
+  deletedById    String?   @map("deleted_by_id")
+
+  project    Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdBy  User        @relation("PccesImportCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  attachment Attachment? @relation(fields: [attachmentId], references: [id], onDelete: SetNull)
+  items      PccesItem[]
+
+  @@unique([projectId, version])
+  @@index([projectId])
+  @@index([createdAt(sort: Desc)])
+  @@map("pcces_imports")
+}
+
+model PccesItem {
+  id             String    @id @default(cuid())
+  importId       String    @map("import_id")
+  itemKey        Int       @map("item_key")
+  parentItemKey  Int?      @map("parent_item_key")
+  itemNo         String    @map("item_no")
+  itemKind       String    @map("item_kind") // mainItem | general
+  refCode        String    @map("ref_code")
+  description    String    @map("description") @db.Text
+  unit           String    @map("unit")
+  quantity       Decimal   @map("quantity") @db.Decimal(18, 4)
+  unitPrice      Decimal   @map("unit_price") @db.Decimal(18, 4)
+  amountImported Decimal?  @map("amount_imported") @db.Decimal(18, 4)
+  remark         String    @default("") @map("remark") @db.Text
+  percent        Decimal?  @map("percent") @db.Decimal(18, 4)
+  path           String    @map("path") @db.Text
+  depth          Int       @map("depth")
+  deletedAt      DateTime? @map("deleted_at")
+  deletedById    String?   @map("deleted_by_id")
+
+  import PccesImport @relation(fields: [importId], references: [id], onDelete: Cascade)
+
+  @@unique([importId, itemKey])
+  @@index([importId])
+  @@index([importId, itemKind])
+  @@map("pcces_items")
+}
+
+/// 公共工程施工日誌主檔（依附表四欄位；軟刪除）
+model ConstructionDailyLog {
+  id     String @id @default(cuid())
+  /// 專案識別
+  projectId String @map("project_id")
+
+  /// 表頭
+  reportNo   String?   @map("report_no")
+  weatherAm  String?   @map("weather_am")
+  weatherPm  String?   @map("weather_pm")
+  logDate    DateTime  @map("log_date") @db.Date
+
+  /// 工程基本資料（表上快照；可與專案主檔不同步）
+  projectName         String    @map("project_name")
+  contractorName      String    @map("contractor_name")
+  approvedDurationDays Int?     @map("approved_duration_days")
+  accumulatedDays     Int?      @map("accumulated_days")
+  remainingDays       Int?      @map("remaining_days")
+  extendedDays        Int?      @map("extended_days")
+  startDate           DateTime? @map("start_date") @db.Date
+  completionDate      DateTime? @map("completion_date") @db.Date
+  /// 實際進度（%）人工填寫；預定進度由 API 依開工日＋核定工期計算回傳
+  actualProgress      Decimal?  @map("actual_progress") @db.Decimal(6, 2)
+
+  /// 營造業專業工程特定施工項目
+  specialItemA String @default("") @map("special_item_a") @db.Text
+  specialItemB String @default("") @map("special_item_b") @db.Text
+
+  /// 技術士
+  hasTechnician Boolean @default(false) @map("has_technician")
+
+  /// 職安衛
+  preWorkEducation   String @default("no") @map("pre_work_education") // yes | no
+  newWorkerInsurance String @default("no_new") @map("new_worker_insurance") // yes | no | no_new
+  ppeCheck           String @default("no") @map("ppe_check") // yes | no
+  otherSafetyNotes   String @default("") @map("other_safety_notes") @db.Text
+
+  /// 備查
+  sampleTestRecord   String @default("") @map("sample_test_record") @db.Text
+  subcontractorNotice String @default("") @map("subcontractor_notice") @db.Text
+  importantNotes     String @default("") @map("important_notes") @db.Text
+
+  /// 簽章
+  siteManagerSigned Boolean @default(false) @map("site_manager_signed")
+
+  createdById String   @map("created_by_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  deletedAt   DateTime? @map("deleted_at")
+  deletedById String?   @map("deleted_by_id")
+
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdBy User    @relation("ConstructionDailyLogCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+
+  workItems       ConstructionDailyLogWorkItem[]
+  materials       ConstructionDailyLogMaterial[]
+  personnelEquipmentRows ConstructionDailyLogPersonnelEquipment[]
+
+  @@index([projectId])
+  @@index([projectId, logDate(sort: Desc)])
+  @@map("construction_daily_logs")
+}
+
+/// 施工日誌（一）施工項目
+model ConstructionDailyLogWorkItem {
+  id           String  @id @default(cuid())
+  logId        String  @map("log_id")
+  sortOrder    Int     @default(0) @map("sort_order")
+  workItemName String  @map("work_item_name")
+  unit         String
+  contractQty  Decimal @map("contract_qty") @db.Decimal(18, 4)
+  dailyQty     Decimal @map("daily_qty") @db.Decimal(18, 4)
+  accumulatedQty Decimal @map("accumulated_qty") @db.Decimal(18, 4)
+  remark       String  @default("")
+
+  log ConstructionDailyLog @relation(fields: [logId], references: [id], onDelete: Cascade)
+
+  @@index([logId])
+  @@map("construction_daily_log_work_items")
+}
+
+/// 施工日誌（二）材料
+model ConstructionDailyLogMaterial {
+  id             String  @id @default(cuid())
+  logId          String  @map("log_id")
+  sortOrder      Int     @default(0) @map("sort_order")
+  materialName   String  @map("material_name")
+  unit           String
+  contractQty    Decimal @map("contract_qty") @db.Decimal(18, 4)
+  dailyUsedQty   Decimal @map("daily_used_qty") @db.Decimal(18, 4)
+  accumulatedQty Decimal @map("accumulated_qty") @db.Decimal(18, 4)
+  remark         String  @default("")
+
+  log ConstructionDailyLog @relation(fields: [logId], references: [id], onDelete: Cascade)
+
+  @@index([logId])
+  @@map("construction_daily_log_materials")
+}
+
+/// 施工日誌（三）人員及機具（一列可同時填工別／人數與機具）
+model ConstructionDailyLogPersonnelEquipment {
+  id                      String  @id @default(cuid())
+  logId                   String  @map("log_id")
+  sortOrder               Int     @default(0) @map("sort_order")
+  workType                String  @default("") @map("work_type")
+  dailyWorkers            Int     @default(0) @map("daily_workers")
+  accumulatedWorkers      Int     @default(0) @map("accumulated_workers")
+  equipmentName           String  @default("") @map("equipment_name")
+  dailyEquipmentQty       Decimal @default(0) @map("daily_equipment_qty") @db.Decimal(18, 4)
+  accumulatedEquipmentQty Decimal @default(0) @map("accumulated_equipment_qty") @db.Decimal(18, 4)
+
+  log ConstructionDailyLog @relation(fields: [logId], references: [id], onDelete: Cascade)
+
+  @@index([logId])
+  @@map("construction_daily_log_personnel_equipment")
 }
 
 // ---------- 氣象／災防警報紀錄（混合：即時顯示＋寫入保留查詢）----------

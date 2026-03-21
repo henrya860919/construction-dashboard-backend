@@ -16,6 +16,8 @@ export const PERMISSION_MODULES = [
   'construction.equipment',
   'construction.inspection',
   'construction.diary',
+  /** PCCES／eTender XML 匯入與工項版本（施工日誌前置資料） */
+  'construction.pcces',
   'construction.defect',
   'construction.photo',
   'repair.overview',
