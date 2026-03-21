@@ -47,8 +47,9 @@ npm install fast-xml-parser
 
 ### 1.4 解析策略
 
-- 遞迴走訪所有 `PayItem`，累積**麵包屑路徑**（供顯示與匯總階層）。
-- **僅** `itemKind === 'general'` 的葉節點為「可填施工日誌／估驗」的工項；`mainItem` 作為路徑與階層小計節點。
+- **匯入範圍**：只在 `DetailList` **頂層** `PayItem` 中尋找 `itemNo ===「壹」`（且 `itemKind` 為 `mainItem`／`general`）作為根，**僅遞迴該節點底下子樹**寫入 DB。`itemNo` 在不同父層會重複（例如「壹」「伍」底下各有「一、二、三」），**不可用 `itemNo` 做跨分支識別**；階層與親子關係一律以 **`itemKey`／巢狀 `PayItem`／遞迴時維護的 `parentItemKey`** 為準。
+- 遞迴走訪上述子樹內所有 `PayItem`，累積**麵包屑路徑**（供顯示與匯總階層）。
+- **僅** `itemKind === 'general'` 的葉節點為「可填施工日誌／估驗」的工項；`mainItem` 作為路徑與階層小計節點（匯入時仍一併儲存，供複價 rollup 與父階顯示）。
 - 父層金額小計不人工維護「與 XML 完全一致」，改由系統自葉節點加總（若需與 PCCES 書面完全一致，需另存「匯入時 XML 複價」作對照欄，見 §8）。
 
 ### 1.5 解析實作（正式程式碼）
@@ -56,8 +57,8 @@ npm install fast-xml-parser
 後端實作見 **`src/modules/pcces-import/pcces-xml-parser.ts`**（`fast-xml-parser`）。
 
 - **Parser 選項**：`ignoreAttributes: false`、`attributeNamePrefix: '@_'`、`isArray: (name) => ['PayItem','Description','Unit'].includes(name)`、`removeNSPrefix: true`
-- **入口**：自解析結果遞迴尋找 `ETenderSheet` → `DetailList.PayItem`，層數不寫死。
-- **扁平化**：每個 `PayItem` 一列，`parentItemKey` 指父節點 `itemKey`（根為 `null`）；`mainItem` 與 `general` 皆寫入。
+- **入口**：自解析結果遞迴尋找 `ETenderSheet` → `DetailList.PayItem` → 頂層錨定「壹」後再扁平化，層數不寫死。
+- **扁平化**：每個 `PayItem` 一列，`parentItemKey` 指父節點 `itemKey`（「壹」根列為 `null`）；`mainItem` 與 `general` 皆寫入。
 - **欄位**：`Description`／`Unit` 取 `zh-TW`；`Price`／`Amount`／`Quantity` 支援純數字或 `{ '#text': '...' }`；另解析 **`Remark`**、**`Percent`**。
 - **階層金額計算**（寫入 DB 前，`pcces-amount-rollup.ts`）：`general` 之複價 = **數量 × 單價**（`Decimal(18,4)` 四捨五入）；`mainItem` 之複價 = **直接子列複價加總**，單價 = **複價 ÷ 數量**（數量 > 0；與 §1.8 父層由子項加總對齊）。匯入後列表／明細以計算值為準，不再沿用 XML 之 `Amount`／父層 `Price` 原字串。
 - **排序**：寫入前依 **`itemKey` 升冪** 排序並檢查唯一性。

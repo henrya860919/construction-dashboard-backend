@@ -114,7 +114,37 @@ function pickRemark(raw: Record<string, unknown>): string {
 
 type BreadcrumbEntry = { itemNo: string; desc: string; itemKey: number }
 
-const ALLOWED_KINDS = new Set(['mainItem', 'general'])
+/**
+ * 僅在 DetailList 的**頂層** PayItem 陣列中尋找 itemNo ===「壹」（不依賴 itemKind；itemKey 必須有效）。
+ * itemNo 在不同父層下會重複，不可用它做跨分支識別。
+ */
+function findTopLevelYiPayItemNode(payRoot: unknown): Record<string, unknown> {
+  const list = ensureArray(payRoot)
+  const matches: Record<string, unknown>[] = []
+  for (const raw of list) {
+    if (!isRecord(raw)) continue
+    const itemNo = String(raw['@_itemNo'] ?? '').trim()
+    if (itemNo !== '壹') continue
+    const k = parseInt(String(raw['@_itemKey'] ?? ''), 10)
+    if (Number.isNaN(k)) continue
+    matches.push(raw)
+  }
+  if (matches.length === 0) {
+    throw new AppError(
+      400,
+      'PCCES_XML_INVALID',
+      'DetailList 頂層找不到 itemNo 為「壹」且具有效 itemKey 的工項，無法決定匯入範圍'
+    )
+  }
+  if (matches.length > 1) {
+    throw new AppError(
+      400,
+      'PCCES_XML_INVALID',
+      'DetailList 頂層有多個 itemNo「壹」的工項，無法決定匯入範圍'
+    )
+  }
+  return matches[0]!
+}
 
 function findEtenderSheet(obj: unknown): Record<string, unknown> | null {
   if (!isRecord(obj)) return null
@@ -142,7 +172,6 @@ function traversePayItems(
     if (!isRecord(raw)) continue
 
     const itemKindRaw = String(raw['@_itemKind'] ?? '').trim()
-    if (!ALLOWED_KINDS.has(itemKindRaw)) continue
 
     const itemKeyParsed = parseInt(String(raw['@_itemKey'] ?? ''), 10)
     if (Number.isNaN(itemKeyParsed)) {
@@ -225,11 +254,14 @@ export async function parsePccesXmlBuffer(buffer: Buffer): Promise<{
     throw new AppError(400, 'PCCES_XML_INVALID', 'DetailList 內無 PayItem')
   }
 
+  const yiPayItem = findTopLevelYiPayItemNode(payRoot)
+
   const rows: ParsedPccesRow[] = []
-  traversePayItems(payRoot, null, [], rows)
+  /** 自「壹」節點遞迴；子列 parentItemKey 由上層 itemKey 帶入，等同於整樹的 rootAncestor 均為「壹」的 itemKey */
+  traversePayItems(yiPayItem, null, [], rows)
 
   if (rows.length === 0) {
-    throw new AppError(400, 'PCCES_XML_INVALID', '未解析出任何 mainItem／general 工項')
+    throw new AppError(400, 'PCCES_XML_INVALID', '「壹」底下未解析出任何 PayItem 工項')
   }
 
   applyPccesComputedAmounts(rows)

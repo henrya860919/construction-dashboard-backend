@@ -29,7 +29,7 @@
 |------|------|------|
 | **套件** `fast-xml-parser` | 解析 eTender XML（PayItem 遞迴展開、`itemKey` 升冪） | ✅ 已安裝 |
 | **Prisma 模型** | `PccesImport`（專案內版本）+ `PccesItem` | ✅ |
-| **匯入服務** | 遞迴 `PayItem`（`mainItem`／`general`）、`itemKey` 唯一 | ✅ `pcces-xml-parser.ts` |
+| **匯入服務** | 頂層錨定 `itemNo「壹」` 後遞迴子樹；`itemKey` 唯一；親子靠巢狀＋`parentItemKey` | ✅ `pcces-xml-parser.ts` |
 | **API** | `GET/POST/DELETE .../pcces-imports`、`GET .../items` | ✅ |
 | **列表／詳情筆數** | `itemCount`、`generalCount` 以 **`PccesItem`（未軟刪）即時 `groupBy` 計算**；`PccesImport` 上欄位僅作匯入當下冗餘快取 | ✅ `pcces-import.repository.ts` |
 | **儲存** | 原始 XML 歸檔 | ✅ `category=pcces_xml`（失敗不阻擋匯入） |

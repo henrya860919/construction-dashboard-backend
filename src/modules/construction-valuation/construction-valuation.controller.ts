@@ -33,10 +33,15 @@ export const constructionValuationController = {
       typeof req.query.excludeValuationId === 'string' && req.query.excludeValuationId.length > 0
         ? req.query.excludeValuationId
         : undefined
+    const asOfDate =
+      typeof req.query.asOfDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query.asOfDate.trim())
+        ? req.query.asOfDate.trim()
+        : undefined
     const data = await constructionValuationService.getPccesLinePicker(
       projectId,
       req.user,
-      excludeValuationId
+      excludeValuationId,
+      asOfDate
     )
     res.status(200).json({ data })
   },

@@ -94,7 +94,13 @@ https://construction-dashboard-frontend-ust.vercel.app,https://另一個.vercel.
    `npx prisma migrate deploy`
 4. 再執行：`npx prisma generate`（若 CI 未自動跑）
 
-完成後 **`pcces_imports`** 應具備 **`approved_at`、`approved_by_id`**，**`construction_daily_log_work_items`** 應具備 **`pcces_item_id`**（若該 migration 一併尚未套用）。
+完成後 **`pcces_imports`** 應具備 **`approved_at`、`approved_by_id`**，**`construction_daily_log_work_items`** 應具備 **`pcces_item_id`**（若該 migration 一併尚未套用）。較新之 **`20260326120000_construction_daily_log_work_item_unit_price`** 會新增可選 **`unit_price`**（單價快照）。
+
+**`version_label`（PCCES 版本名稱）**：若終端機出現 **`pccesImport.findMany`／`create` … `version_label` does not exist**（**`P2022`**），代表 **`20260322161000_pcces_import_version_label`** 尚未套用到目前這顆 DB。先排除 **`P3009`**（見上），再執行 `npx prisma migrate deploy`。
+
+**（開發用）migration 調整**：`version_label` 已自錯序的 `20260321120000_*` **改為** `20260322161000_pcces_import_version_label`（須在 `pcces_imports` 建表之後）。**全新 reset／新環境**直接依現有 migrations 即可。若某台 DB 的 `_prisma_migrations` **曾成功記錄舊檔名**且已具 `version_label` 欄位，部署時可能重複 `ADD COLUMN` 失敗，需手動對齊 migration 紀錄或改走新庫。
+
+**曾卡住的 `20260325100000_construction_valuations`／`20260325110000_pcces_item_changes`**：舊版 migration 曾誤用 FK 目標表名 **`users`／`projects`**（本專案實際為 **`"User"`、`"Project"`**），可能導致 migration 中途失敗、表已建立但無 FK，且阻擋後續 migration。repo 內 SQL 已修正；若本機 DB 已卡在該狀態，可參考 **`scripts/fix-stuck-valuations-migration.ts`**（補 FK 與權限 backfill）後再 `npx prisma migrate resolve --applied …` 與 `migrate deploy`（請先閱讀腳本註解）。
 
 #### 1.5.2 Prisma：`P2021`／`construction_valuation_lines` does not exist（估驗計價）
 

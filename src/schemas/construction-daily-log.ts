@@ -23,6 +23,16 @@ export const constructionDailyLogWorkItemInputSchema = z.object({
   workItemName: z.string().min(1).max(4000),
   unit: z.string().max(100).default(''),
   contractQty: decimalField,
+  /** 綁定 PCCES 時建議帶入單價快照；省略則儲存為 null */
+  unitPrice: z
+    .union([z.string(), z.number()])
+    .optional()
+    .transform((v) => {
+      if (v === undefined) return undefined
+      const s = String(v).replace(/,/g, '').trim()
+      if (s === '') return undefined
+      return toDecimalString(v)
+    }),
   dailyQty: decimalField,
   accumulatedQty: decimalField,
   remark: z.string().max(8000).default(''),

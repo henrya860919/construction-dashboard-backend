@@ -51,8 +51,7 @@ CREATE INDEX "User_email_idx" ON "User"("email");
 -- CreateIndex
 CREATE INDEX "project_members_project_id_user_id_idx" ON "project_members"("project_id", "user_id");
 
--- CreateIndex
-CREATE INDEX "project_self_inspection_template_links_project_id_template__idx" ON "project_self_inspection_template_links"("project_id", "template_id");
+-- （project_self_inspection_template_links 之索引見 migration 20260321120000_project_self_inspection_template_links）
 
 -- AddForeignKey
 ALTER TABLE "tenant_permission_templates" ADD CONSTRAINT "tenant_permission_templates_tenant_id_fkey" FOREIGN KEY ("tenant_id") REFERENCES "Tenant"("id") ON DELETE CASCADE ON UPDATE CASCADE;

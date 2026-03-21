@@ -9,6 +9,12 @@ import {
   constructionValuationUpdateSchema,
 } from '../../schemas/construction-valuation.js'
 import { pccesImportRepository } from '../pcces-import/pcces-import.repository.js'
+import {
+  allowsUserEnteredQtyForPccesItemKind,
+  isStructuralLeaf,
+  parentItemKeysWithChildren,
+} from '../pcces-import/pcces-item-tree.js'
+import { constructionDailyLogRepository } from '../construction-daily-log/construction-daily-log.repository.js'
 import { constructionValuationRepository } from './construction-valuation.repository.js'
 
 type AuthUser = {
@@ -23,6 +29,17 @@ function formatDateOnlyUtc(d: Date | null): string | null {
   const m = String(d.getUTCMonth() + 1).padStart(2, '0')
   const day = String(d.getUTCDate()).padStart(2, '0')
   return `${y}-${m}-${day}`
+}
+
+/** 估驗「截至」日：有表頭日期用該日（UTC 日界）；否則用今天 UTC。 */
+function asOfDateUtcForValuation(valuationDateIso: string | null | undefined): Date {
+  const t = valuationDateIso?.trim()
+  if (t) {
+    const [y, m, d] = t.split('-').map(Number)
+    if (y && m && d) return new Date(Date.UTC(y, m - 1, d))
+  }
+  const now = new Date()
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
 }
 
 function serializeDecimal(v: { toString(): string } | null | undefined): string | null {
@@ -59,17 +76,26 @@ function serializeLineComputed(params: {
   unit: string
   remark: string
   pccesItemId: string | null
+  /** 綁定 PCCES 時之 XML itemKind；手填列為 null */
+  pccesItemKind: string | null
   lineId: string
+  /** PCCES 列：施工日誌截至估驗日之累計完成量；手填列為 null（不限制） */
+  logAccumulatedQtyToDate: Prisma.Decimal | null
 }) {
   const cap = lineCap(params.contractQty, params.approvedQtyAfterChange)
   const current = params.currentPeriodQty
   const prior = params.priorBilledQty
   const cumulative = prior.plus(current)
-  const available = cap.minus(prior).minus(current)
+  const effectiveCap =
+    params.pccesItemId != null && params.logAccumulatedQtyToDate != null
+      ? Prisma.Decimal.min(cap, params.logAccumulatedQtyToDate)
+      : cap
+  const available = effectiveCap.minus(prior).minus(current)
   const availStr = available.isNeg() ? '0' : available.toString()
   return {
     id: params.lineId,
     pccesItemId: params.pccesItemId,
+    pccesItemKind: params.pccesItemKind,
     itemNo: params.itemNo,
     description: params.description,
     unit: params.unit,
@@ -80,7 +106,11 @@ function serializeLineComputed(params: {
     remark: params.remark,
     priorBilledQty: prior.toString(),
     maxQty: cap.toString(),
-    /** 本次可估驗數量（剩餘可再填之空間；與本次估驗數量連動） */
+    logAccumulatedQtyToDate:
+      params.pccesItemId != null && params.logAccumulatedQtyToDate != null
+        ? params.logAccumulatedQtyToDate.toString()
+        : null,
+    /** 本次可估驗數量：min(契約上限,日誌累計)−已請款−本次填寫；與本次估驗數量連動 */
     availableValuationQty: availStr,
     cumulativeValuationQtyToDate: cumulative.toString(),
     currentPeriodAmount: current.mul(params.unitPrice).toString(),
@@ -98,11 +128,15 @@ type SerializedValuationLine = ReturnType<typeof serializeLineComputed> & {
 
 function serializeLineWithParentKey(
   l: ValuationLineRow,
-  prior: Prisma.Decimal
+  prior: Prisma.Decimal,
+  logByPccesId: Map<string, Prisma.Decimal>
 ): SerializedValuationLine {
+  const logQty =
+    l.pccesItemId != null ? (logByPccesId.get(l.pccesItemId) ?? new Prisma.Decimal(0)) : null
   const base = serializeLineComputed({
     lineId: l.id,
     pccesItemId: l.pccesItemId,
+    pccesItemKind: l.pccesItem?.itemKind ?? null,
     itemNo: l.pccesItem?.itemNo ?? l.itemNo,
     description: l.description,
     unit: l.unit,
@@ -112,6 +146,7 @@ function serializeLineWithParentKey(
     currentPeriodQty: l.currentPeriodQty,
     remark: l.remark,
     priorBilledQty: prior,
+    logAccumulatedQtyToDate: logQty,
   })
   return {
     ...base,
@@ -121,7 +156,8 @@ function serializeLineWithParentKey(
 
 async function buildOrderedLinesAndGroups(
   row: NonNullable<Awaited<ReturnType<typeof constructionValuationRepository.findByIdForProject>>>,
-  priorByPccesId: Map<string, Prisma.Decimal>
+  priorByPccesId: Map<string, Prisma.Decimal>,
+  logByPccesId: Map<string, Prisma.Decimal>
 ): Promise<{
   lines: SerializedValuationLine[]
   lineGroups: {
@@ -145,7 +181,7 @@ async function buildOrderedLinesAndGroups(
         : new Prisma.Decimal(0)
     return {
       sortOrder: l.sortOrder,
-      serialized: serializeLineWithParentKey(l, prior),
+      serialized: serializeLineWithParentKey(l, prior, logByPccesId),
       raw: l,
     }
   })
@@ -192,7 +228,7 @@ async function buildOrderedLinesAndGroups(
     const pk = e.raw.pccesItem?.parentItemKey
     if (pk != null) {
       const parent = byKey.get(pk)
-      if (parent?.itemKind === 'mainItem') {
+      if (parent != null) {
         const list = parentBuckets.get(pk) ?? []
         list.push(e)
         parentBuckets.set(pk, list)
@@ -293,6 +329,7 @@ async function normalizeValuationBody(
   const latest = await pccesImportRepository.findLatestApprovedImport(projectId)
 
   let priorMap = new Map<string, Prisma.Decimal>()
+  let logAccumMap = new Map<string, Prisma.Decimal>()
   if (pccesIds.length > 0) {
     if (!latest) {
       throw new AppError(400, 'PCCES_NOT_APPROVED', '專案尚無核定之 PCCES 版本，無法綁定工項')
@@ -302,7 +339,22 @@ async function normalizeValuationBody(
       pccesIds,
       excludeValuationId
     )
+    const asOf = asOfDateUtcForValuation(body.valuationDate ?? null)
+    logAccumMap = await constructionDailyLogRepository.sumDailyQtyByPccesItemsThroughDateInclusive(
+      projectId,
+      pccesIds,
+      asOf
+    )
   }
+
+  const treeShape =
+    pccesIds.length === 0
+      ? []
+      : await prisma.pccesItem.findMany({
+          where: { importId: latest!.id, ...notDeleted },
+          select: { itemKey: true, parentItemKey: true },
+        })
+  const parentsWithChildren = parentItemKeysWithChildren(treeShape)
 
   const items =
     pccesIds.length === 0
@@ -311,7 +363,6 @@ async function normalizeValuationBody(
           where: {
             id: { in: pccesIds },
             importId: latest!.id,
-            itemKind: 'general',
             ...notDeleted,
           },
         })
@@ -343,19 +394,33 @@ async function normalizeValuationBody(
     }
 
     const item = itemById.get(line.pccesItemId)
-    if (!item) {
-      throw new AppError(400, 'BAD_REQUEST', 'PCCES 工項無效或不在目前核定版本中')
+    if (!item || !isStructuralLeaf(item, parentsWithChildren)) {
+      throw new AppError(
+        400,
+        'BAD_REQUEST',
+        'PCCES 工項無效、非末層或不在目前核定版本中'
+      )
+    }
+
+    if (!allowsUserEnteredQtyForPccesItemKind(item.itemKind) && !current.isZero()) {
+      throw new AppError(
+        400,
+        'VALIDATION_ERROR',
+        '此 PCCES 類型僅能填寫本次估驗數量為 0'
+      )
     }
 
     const contract = item.quantity
     const approvedSnap = line.approvedQtyAfterChange ? decQty(line.approvedQtyAfterChange) : null
     const cap = lineCap(contract, approvedSnap)
     const prior = priorMap.get(line.pccesItemId) ?? new Prisma.Decimal(0)
-    if (prior.plus(current).gt(cap)) {
+    const logQty = logAccumMap.get(line.pccesItemId) ?? new Prisma.Decimal(0)
+    const effectiveCap = Prisma.Decimal.min(cap, logQty)
+    if (prior.plus(current).gt(effectiveCap)) {
       throw new AppError(
         400,
         'VALUATION_QTY_EXCEEDED',
-        '本次估驗後累計不可超過契約／變更後核定數量'
+        '本次估驗後累計不可超過施工日誌累計完成量（並受契約／變更後核定上限）'
       )
     }
 
@@ -395,9 +460,10 @@ function serializeListRow(
 
 async function serializeDetail(
   row: NonNullable<Awaited<ReturnType<typeof constructionValuationRepository.findByIdForProject>>>,
-  priorByPccesId: Map<string, Prisma.Decimal>
+  priorByPccesId: Map<string, Prisma.Decimal>,
+  logByPccesId: Map<string, Prisma.Decimal>
 ) {
-  const { lines, lineGroups } = await buildOrderedLinesAndGroups(row, priorByPccesId)
+  const { lines, lineGroups } = await buildOrderedLinesAndGroups(row, priorByPccesId, logByPccesId)
   return {
     id: row.id,
     projectId: row.projectId,
@@ -425,7 +491,16 @@ async function loadValuationDetail(projectId: string, valuationId: string, user:
           pccesIds,
           valuationId
         )
-  return await serializeDetail(row, priorMap)
+  const asOf = asOfDateUtcForValuation(formatDateOnlyUtc(row.valuationDate))
+  const logMap =
+    pccesIds.length === 0
+      ? new Map<string, Prisma.Decimal>()
+      : await constructionDailyLogRepository.sumDailyQtyByPccesItemsThroughDateInclusive(
+          projectId,
+          pccesIds,
+          asOf
+        )
+  return await serializeDetail(row, priorMap, logMap)
 }
 
 export const constructionValuationService = {
@@ -477,33 +552,45 @@ export const constructionValuationService = {
   },
 
   /**
-   * 估驗計價用：最新核定版 PCCES general 工項（與施工日誌相同分組），
-   * 並帶出他次估驗已請款數量與剩餘可估驗空間（尚未扣本次手填）。
+   * 估驗計價用：最新核定版**全部**工項於 `rows`，與「PCCES 明細／全部類型」相同 **itemKey 升序**；
+   * 父列與末層欄位一致；`isStructuralLeaf` 為 true 者帶估驗／日誌聚合欄位。
    */
-  async getPccesLinePicker(projectId: string, user: AuthUser, excludeValuationId?: string) {
+  async getPccesLinePicker(
+    projectId: string,
+    user: AuthUser,
+    excludeValuationId?: string,
+    /** YYYY-MM-DD；省略則截至今日 UTC */
+    asOfDateIso?: string | null
+  ) {
     await assertProjectModuleAction(user, projectId, 'construction.valuation', 'read')
     const latest = await pccesImportRepository.findLatestApprovedImport(projectId)
-    type ChildOut = {
+    type RowOut = {
       pccesItemId: string
+      itemKey: number
+      parentItemKey: number | null
       itemNo: string
       description: string
       unit: string
+      itemKind: string
       contractQty: string
       approvedQtyAfterChange: string | null
       unitPrice: string
-      priorBilledQty: string
-      maxQty: string
-      suggestedAvailableQty: string
+      isStructuralLeaf: boolean
+      priorBilledQty: string | null
+      maxQty: string | null
+      logAccumulatedQtyToDate: string | null
+      suggestedAvailableQty: string | null
     }
     type GroupOut = {
       parent: { itemNo: string; description: string; unit: string; itemKey: number } | null
-      children: ChildOut[]
+      children: RowOut[]
     }
     if (!latest) {
       return {
         pccesImport: null as null,
+        rows: [] as RowOut[],
         groups: [] as GroupOut[],
-        items: [] as ChildOut[],
+        items: [] as RowOut[],
       }
     }
 
@@ -522,106 +609,88 @@ export const constructionValuationService = {
         unitPrice: true,
       },
     })
-    const byItemKey = new Map(allItems.map((i) => [i.itemKey, i]))
-    const generals = allItems.filter((i) => i.itemKind === 'general')
-
-    const childrenByParentKey = new Map<number, typeof generals>()
-    const orphans: typeof generals = []
-    for (const g of generals) {
-      const pk = g.parentItemKey
-      if (pk == null) {
-        orphans.push(g)
-        continue
-      }
-      const parentRow = byItemKey.get(pk)
-      if (!parentRow || parentRow.itemKind !== 'mainItem') {
-        orphans.push(g)
-        continue
-      }
-      const list = childrenByParentKey.get(pk) ?? []
-      list.push(g)
-      childrenByParentKey.set(pk, list)
-    }
-
-    const allChildIds: string[] = []
-    const groups: GroupOut[] = []
-    const sortedParentKeys = [...childrenByParentKey.keys()].sort((a, b) => a - b)
-    for (const pk of sortedParentKeys) {
-      const kids = childrenByParentKey.get(pk)
-      if (!kids?.length) continue
-      kids.sort((a, b) => a.itemKey - b.itemKey)
-      const parentRow = byItemKey.get(pk)
-      if (!parentRow) continue
-      allChildIds.push(...kids.map((k) => k.id))
-      groups.push({
-        parent: {
-          itemNo: parentRow.itemNo,
-          description: parentRow.description,
-          unit: parentRow.unit,
-          itemKey: parentRow.itemKey,
-        },
-        children: kids.map((r) => ({
-          pccesItemId: r.id,
-          itemNo: r.itemNo,
-          description: r.description,
-          unit: r.unit,
-          contractQty: r.quantity.toString(),
-          approvedQtyAfterChange: null as string | null,
-          unitPrice: r.unitPrice.toString(),
-          priorBilledQty: '0',
-          maxQty: r.quantity.toString(),
-          suggestedAvailableQty: r.quantity.toString(),
-        })),
-      })
-    }
-    if (orphans.length > 0) {
-      orphans.sort((a, b) => a.itemKey - b.itemKey)
-      allChildIds.push(...orphans.map((o) => o.id))
-      groups.push({
-        parent: null,
-        children: orphans.map((r) => ({
-          pccesItemId: r.id,
-          itemNo: r.itemNo,
-          description: r.description,
-          unit: r.unit,
-          contractQty: r.quantity.toString(),
-          approvedQtyAfterChange: null as string | null,
-          unitPrice: r.unitPrice.toString(),
-          priorBilledQty: '0',
-          maxQty: r.quantity.toString(),
-          suggestedAvailableQty: r.quantity.toString(),
-        })),
-      })
-    }
+    const parentsWithChildren = parentItemKeysWithChildren(allItems)
+    const leafIds = new Set(
+      allItems.filter((i) => isStructuralLeaf(i, parentsWithChildren)).map((i) => i.id)
+    )
+    const leafIdList = [...leafIds]
 
     const priorMap =
-      allChildIds.length === 0
+      leafIdList.length === 0
         ? new Map<string, Prisma.Decimal>()
         : await constructionValuationRepository.sumCurrentPeriodQtyByPccesItemsExcludingValuation(
             projectId,
-            allChildIds,
+            leafIdList,
             excludeValuationId
           )
 
-    for (const g of groups) {
-      for (const c of g.children) {
-        const prior = priorMap.get(c.pccesItemId) ?? new Prisma.Decimal(0)
-        const cap = decQty(c.maxQty)
-        const avail = cap.minus(prior)
-        c.priorBilledQty = prior.toString()
-        c.suggestedAvailableQty = (avail.isNeg() ? new Prisma.Decimal(0) : avail).toString()
-      }
-    }
+    const pickerAsOf = asOfDateUtcForValuation(
+      asOfDateIso && asOfDateIso.trim() !== '' ? asOfDateIso : undefined
+    )
+    const logMap =
+      leafIdList.length === 0
+        ? new Map<string, Prisma.Decimal>()
+        : await constructionDailyLogRepository.sumDailyQtyByPccesItemsThroughDateInclusive(
+            projectId,
+            leafIdList,
+            pickerAsOf
+          )
 
-    const items: ChildOut[] = groups.flatMap((g) => g.children)
-    const parentRow = await pccesImportRepository.findByIdForProject(projectId, latest.id)
+    const rows: RowOut[] = allItems.map((r) => {
+      const isLeaf = leafIds.has(r.id)
+      const cap = r.quantity
+      if (!isLeaf) {
+        return {
+          pccesItemId: r.id,
+          itemKey: r.itemKey,
+          parentItemKey: r.parentItemKey,
+          itemNo: r.itemNo,
+          description: r.description,
+          unit: r.unit,
+          itemKind: r.itemKind,
+          contractQty: r.quantity.toString(),
+          approvedQtyAfterChange: null as string | null,
+          unitPrice: r.unitPrice.toString(),
+          isStructuralLeaf: false,
+          priorBilledQty: null,
+          maxQty: null,
+          logAccumulatedQtyToDate: null,
+          suggestedAvailableQty: null,
+        }
+      }
+      const prior = priorMap.get(r.id) ?? new Prisma.Decimal(0)
+      const logQty = logMap.get(r.id) ?? new Prisma.Decimal(0)
+      const effectiveCap = Prisma.Decimal.min(cap, logQty)
+      const avail = effectiveCap.minus(prior)
+      return {
+        pccesItemId: r.id,
+        itemKey: r.itemKey,
+        parentItemKey: r.parentItemKey,
+        itemNo: r.itemNo,
+        description: r.description,
+        unit: r.unit,
+        itemKind: r.itemKind,
+        contractQty: r.quantity.toString(),
+        approvedQtyAfterChange: null as string | null,
+        unitPrice: r.unitPrice.toString(),
+        isStructuralLeaf: true,
+        priorBilledQty: prior.toString(),
+        maxQty: cap.toString(),
+        logAccumulatedQtyToDate: logQty.toString(),
+        suggestedAvailableQty: (avail.isNeg() ? new Prisma.Decimal(0) : avail).toString(),
+      }
+    })
+
+    const items = rows.filter((x) => x.isStructuralLeaf)
+
+    const importMeta = await pccesImportRepository.findByIdForProject(projectId, latest.id)
     return {
-      pccesImport: parentRow
+      pccesImport: importMeta
         ? {
-            id: parentRow.id,
-            version: parentRow.version,
-            approvedAt: parentRow.approvedAt?.toISOString() ?? null,
-            approvedById: parentRow.approvedById,
+            id: importMeta.id,
+            version: importMeta.version,
+            approvedAt: importMeta.approvedAt?.toISOString() ?? null,
+            approvedById: importMeta.approvedById,
           }
         : {
             id: latest.id,
@@ -629,7 +698,8 @@ export const constructionValuationService = {
             approvedAt: null as string | null,
             approvedById: null as string | null,
           },
-      groups,
+      rows,
+      groups: [] as GroupOut[],
       items,
     }
   },

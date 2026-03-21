@@ -96,10 +96,10 @@ CREATE INDEX "construction_daily_log_materials_log_id_idx" ON "construction_dail
 CREATE INDEX "construction_daily_log_personnel_equipment_log_id_idx" ON "construction_daily_log_personnel_equipment"("log_id");
 
 -- AddForeignKey
-ALTER TABLE "construction_daily_logs" ADD CONSTRAINT "construction_daily_logs_project_id_fkey" FOREIGN KEY ("project_id") REFERENCES "projects"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "construction_daily_logs" ADD CONSTRAINT "construction_daily_logs_project_id_fkey" FOREIGN KEY ("project_id") REFERENCES "Project"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "construction_daily_logs" ADD CONSTRAINT "construction_daily_logs_created_by_id_fkey" FOREIGN KEY ("created_by_id") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "construction_daily_logs" ADD CONSTRAINT "construction_daily_logs_created_by_id_fkey" FOREIGN KEY ("created_by_id") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "construction_daily_log_work_items" ADD CONSTRAINT "construction_daily_log_work_items_log_id_fkey" FOREIGN KEY ("log_id") REFERENCES "construction_daily_logs"("id") ON DELETE CASCADE ON UPDATE CASCADE;

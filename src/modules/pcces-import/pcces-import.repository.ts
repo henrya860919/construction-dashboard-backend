@@ -1,11 +1,20 @@
 import { prisma } from '../../lib/db.js'
 import { notDeleted, softDeleteSet } from '../../shared/soft-delete.js'
 import type { ParsedPccesRow } from './pcces-xml-parser.js'
+import { parentItemKeysWithChildren } from './pcces-item-tree.js'
+
+function utcCalendarDay(d: Date): string {
+  const y = d.getUTCFullYear()
+  const m = String(d.getUTCMonth() + 1).padStart(2, '0')
+  const day = String(d.getUTCDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
 
 export type PccesImportListRow = {
   id: string
   projectId: string
   version: number
+  versionLabel: string | null
   documentType: string | null
   fileName: string
   attachmentId: string | null
@@ -44,32 +53,25 @@ export const pccesImportRepository = {
     importIds: string[]
   ): Promise<Map<string, { itemCount: number; generalCount: number }>> {
     if (importIds.length === 0) return new Map()
-    const [allGroups, genGroups] = await Promise.all([
-      prisma.pccesItem.groupBy({
-        by: ['importId'],
-        where: { importId: { in: importIds }, ...notDeleted },
-        _count: { _all: true },
-      }),
-      prisma.pccesItem.groupBy({
-        by: ['importId'],
-        where: {
-          importId: { in: importIds },
-          itemKind: 'general',
-          ...notDeleted,
-        },
-        _count: { _all: true },
-      }),
-    ])
-    const map = new Map(
-      importIds.map((id) => [id, { itemCount: 0, generalCount: 0 }])
-    )
-    for (const g of allGroups) {
-      const cur = map.get(g.importId)
-      if (cur) cur.itemCount = g._count._all
+    const map = new Map(importIds.map((id) => [id, { itemCount: 0, generalCount: 0 }]))
+    const rows = await prisma.pccesItem.findMany({
+      where: { importId: { in: importIds }, ...notDeleted },
+      select: { importId: true, itemKey: true, parentItemKey: true },
+    })
+    const byImport = new Map<string, { itemKey: number; parentItemKey: number | null }[]>()
+    for (const r of rows) {
+      const list = byImport.get(r.importId) ?? []
+      list.push({ itemKey: r.itemKey, parentItemKey: r.parentItemKey })
+      byImport.set(r.importId, list)
     }
-    for (const g of genGroups) {
-      const cur = map.get(g.importId)
-      if (cur) cur.generalCount = g._count._all
+    for (const id of importIds) {
+      const list = byImport.get(id) ?? []
+      const pw = parentItemKeysWithChildren(list)
+      let leafCount = 0
+      for (const r of list) {
+        if (!pw.has(r.itemKey)) leafCount++
+      }
+      map.set(id, { itemCount: list.length, generalCount: leafCount })
     }
     return map
   },
@@ -89,16 +91,19 @@ export const pccesImportRepository = {
     fileName: string,
     documentType: string | null,
     rows: ParsedPccesRow[],
-    attachmentId: string | null
+    attachmentId: string | null,
+    versionLabel: string | null
   ): Promise<PccesImportListRow> {
     const version = await this.getNextVersion(projectId)
-    const generalCount = rows.filter((r) => r.itemKind === 'general').length
+    const pw = parentItemKeysWithChildren(rows)
+    const generalCount = rows.filter((r) => !pw.has(r.itemKey)).length
 
     const created = await prisma.$transaction(async (tx) => {
       const imp = await tx.pccesImport.create({
         data: {
           projectId,
           version,
+          versionLabel,
           documentType,
           fileName,
           attachmentId,
@@ -139,6 +144,7 @@ export const pccesImportRepository = {
       id: created.id,
       projectId: created.projectId,
       version: created.version,
+      versionLabel: created.versionLabel,
       documentType: created.documentType,
       fileName: created.fileName,
       attachmentId: created.attachmentId,
@@ -170,6 +176,7 @@ export const pccesImportRepository = {
         id: r.id,
         projectId: r.projectId,
         version: r.version,
+        versionLabel: r.versionLabel,
         documentType: r.documentType,
         fileName: r.fileName,
         attachmentId: r.attachmentId,
@@ -191,6 +198,30 @@ export const pccesImportRepository = {
       select: { id: true, version: true },
     })
     return row
+  },
+
+  /**
+   * 在 **填表日**（UTC 日曆天）當日或之前已完成核定之匯入中，取 **version 最大** 者。
+   * 例：3/22 核定新版後，填表日 3/21 仍對應舊版；填表日 3/22 起對應含當日核定之新版。
+   */
+  async findApprovedImportEffectiveOnLogDate(
+    projectId: string,
+    logDate: Date
+  ): Promise<{ id: string; version: number } | null> {
+    const logDay = utcCalendarDay(logDate)
+    const rows = await prisma.pccesImport.findMany({
+      where: { projectId, approvedAt: { not: null }, ...notDeleted },
+      orderBy: { version: 'desc' },
+      select: { id: true, version: true, approvedAt: true },
+    })
+    for (const r of rows) {
+      const a = r.approvedAt
+      if (!a) continue
+      if (utcCalendarDay(a) <= logDay) {
+        return { id: r.id, version: r.version }
+      }
+    }
+    return null
   },
 
   async approveImport(projectId: string, importId: string, approvedById: string): Promise<boolean> {
@@ -221,6 +252,7 @@ export const pccesImportRepository = {
       id: r.id,
       projectId: r.projectId,
       version: r.version,
+      versionLabel: r.versionLabel,
       documentType: r.documentType,
       fileName: r.fileName,
       attachmentId: r.attachmentId,
@@ -231,6 +263,18 @@ export const pccesImportRepository = {
       createdAt: r.createdAt,
       createdById: r.createdById,
     }
+  },
+
+  async updateVersionLabel(
+    projectId: string,
+    importId: string,
+    versionLabel: string | null
+  ): Promise<boolean> {
+    const r = await prisma.pccesImport.updateMany({
+      where: { id: importId, projectId, ...notDeleted },
+      data: { versionLabel },
+    })
+    return r.count > 0
   },
 
   async countItems(
@@ -295,6 +339,10 @@ export const pccesImportRepository = {
     if (!existing) return null
 
     await prisma.$transaction(async (tx) => {
+      await tx.pccesItemChange.updateMany({
+        where: { importId: existing.id, ...notDeleted },
+        data: softDeleteSet(deletedById),
+      })
       await tx.pccesItem.updateMany({
         where: { importId: existing.id, ...notDeleted },
         data: softDeleteSet(deletedById),

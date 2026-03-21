@@ -1,4 +1,5 @@
 import type { ParsedPccesRow } from './pcces-xml-parser.js'
+import { parentItemKeysWithChildren } from './pcces-item-tree.js'
 
 /** 與 DB `Decimal(18,4)`、前端 `formatEngineeringDecimal` 對齊 */
 const DECIMAL_PLACES = 4
@@ -24,11 +25,13 @@ export function engineeringDecimalString(n: number): string {
 
 /**
  * 階層金額（匯入解析後、寫入 DB 前）：
- * - **general**：複價 = 數量 × 單價
- * - **mainItem**：複價 = **直接子列**複價加總；單價 = 複價 ÷ 數量（數量 > 0；否則單價為 0）
+ * - **葉節點**（無子 PayItem 對應列）：複價 = 數量 × 單價（itemKind 可為 general／formula／variablePrice 等）
+ * - **非葉**：複價 = **直接子列**複價加總；單價 = 複價 ÷ 數量（數量 > 0；否則單價為 0）
  */
 export function applyPccesComputedAmounts(rows: ParsedPccesRow[]): void {
   if (rows.length === 0) return
+
+  const parentsWithChildren = parentItemKeysWithChildren(rows)
 
   const childrenByParent = new Map<number, ParsedPccesRow[]>()
   for (const r of rows) {
@@ -48,23 +51,22 @@ export function applyPccesComputedAmounts(rows: ParsedPccesRow[]): void {
     for (const r of rows) {
       if (r.depth !== d) continue
 
-      if (r.itemKind === 'general') {
+      const isLeaf = !parentsWithChildren.has(r.itemKey)
+      if (isLeaf) {
         const amt = parseNum(r.quantity) * parseNum(r.unitPrice)
         r.amountImported = engineeringDecimalString(amt)
         continue
       }
 
-      if (r.itemKind === 'mainItem') {
-        const kids = childrenByParent.get(r.itemKey) ?? []
-        let sum = 0
-        for (const k of kids) {
-          const a = k.amountImported != null ? parseNum(k.amountImported) : 0
-          sum += a
-        }
-        r.amountImported = engineeringDecimalString(sum)
-        const q = parseNum(r.quantity)
-        r.unitPrice = q > 0 ? engineeringDecimalString(roundToPlaces(sum / q)) : '0'
+      const kids = childrenByParent.get(r.itemKey) ?? []
+      let sum = 0
+      for (const k of kids) {
+        const a = k.amountImported != null ? parseNum(k.amountImported) : 0
+        sum += a
       }
+      r.amountImported = engineeringDecimalString(sum)
+      const q = parseNum(r.quantity)
+      r.unitPrice = q > 0 ? engineeringDecimalString(roundToPlaces(sum / q)) : '0'
     }
   }
 }

@@ -89,6 +89,7 @@ model User {
   projectMemberPermissions    ProjectMemberPermission[]
   pccesImportsCreated         PccesImport[]              @relation("PccesImportCreatedBy")
   pccesImportsApproved        PccesImport[]              @relation("PccesImportApprovedBy")
+  pccesItemChangesCreated     PccesItemChange[]
   constructionDailyLogsCreated ConstructionDailyLog[]     @relation("ConstructionDailyLogCreatedBy")
   constructionValuationsCreated ConstructionValuation[]   @relation("ConstructionValuationCreatedBy")
 
@@ -533,6 +534,8 @@ model PccesImport {
   id             String    @id @default(cuid())
   projectId      String    @map("project_id")
   version        Int       // 專案內從 1 遞增
+  /// 版本顯示名稱；第 1 版預設語意為「原契約」（可後改）。第 2 版起由使用者於上傳／Excel 確認時填寫。
+  versionLabel   String?   @map("version_label") @db.VarChar(200)
   documentType   String?   @map("document_type") // budget | contract 等，來自 XML
   fileName       String    @map("file_name")
   attachmentId   String?   @map("attachment_id") // 原始 XML 歸檔（選用）
@@ -551,6 +554,7 @@ model PccesImport {
   approvedBy User?       @relation("PccesImportApprovedBy", fields: [approvedById], references: [id], onDelete: SetNull)
   attachment Attachment? @relation(fields: [attachmentId], references: [id], onDelete: SetNull)
   items      PccesItem[]
+  itemChanges PccesItemChange[]
 
   @@unique([projectId, version])
   @@index([projectId])
@@ -565,7 +569,7 @@ model PccesItem {
   itemKey        Int       @map("item_key")
   parentItemKey  Int?      @map("parent_item_key")
   itemNo         String    @map("item_no")
-  itemKind       String    @map("item_kind") // mainItem | general
+  itemKind       String    @map("item_kind") // XML PayItem kind（mainItem、general、formula、variablePrice 等）；是否可填量由 API／前端依 kind 決定
   refCode        String    @map("ref_code")
   description    String    @map("description") @db.Text
   unit           String    @map("unit")
@@ -582,11 +586,45 @@ model PccesItem {
   import PccesImport @relation(fields: [importId], references: [id], onDelete: Cascade)
   dailyLogWorkItems ConstructionDailyLogWorkItem[]
   constructionValuationLines ConstructionValuationLine[]
+  excelChanges PccesItemChange[]
 
   @@unique([importId, itemKey])
   @@index([importId])
   @@index([importId, itemKind])
   @@map("pcces_items")
+}
+
+/// PCCES 施工項目變更紀錄（Excel 確認匯入後寫入；與該版 import／工項關聯）
+model PccesItemChange {
+  id               String    @id @default(cuid())
+  importId         String    @map("import_id")
+  pccesItemId      String    @map("pcces_item_id")
+  /// auto_matched | manually_placed
+  kind             String    @map("kind")
+  excelItemNo      String?   @map("excel_item_no") @db.VarChar(512)
+  excelDescription String?   @map("excel_description") @db.Text
+  excelUnit        String?   @map("excel_unit") @db.VarChar(512)
+  excelQty         String?   @map("excel_qty") @db.VarChar(128)
+  excelUnitPrice   String?   @map("excel_unit_price") @db.VarChar(128)
+  excelRemark      String?   @map("excel_remark") @db.Text
+  prevQuantity     String?   @map("prev_quantity") @db.VarChar(128)
+  prevUnitPrice    String?   @map("prev_unit_price") @db.VarChar(128)
+  newQuantity      String?   @map("new_quantity") @db.VarChar(128)
+  newUnitPrice     String?   @map("new_unit_price") @db.VarChar(128)
+  /// manually_placed：使用者指定之父層 itemKey
+  parentItemKey    Int?      @map("parent_item_key")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  createdById      String    @map("created_by_id")
+  deletedAt        DateTime? @map("deleted_at")
+  deletedById      String?   @map("deleted_by_id")
+
+  import    PccesImport @relation(fields: [importId], references: [id], onDelete: Cascade)
+  pccesItem PccesItem   @relation(fields: [pccesItemId], references: [id], onDelete: Cascade)
+  createdBy User      @relation(fields: [createdById], references: [id], onDelete: Restrict)
+
+  @@index([importId])
+  @@index([pccesItemId])
+  @@map("pcces_item_changes")
 }
 
 /// 公共工程施工日誌主檔（依附表四欄位；軟刪除）
@@ -662,6 +700,8 @@ model ConstructionDailyLogWorkItem {
   workItemName String  @map("work_item_name")
   unit         String
   contractQty  Decimal @map("contract_qty") @db.Decimal(18, 4)
+  /// 綁定 PCCES 時之單價快照；換版後仍以儲存值為準
+  unitPrice    Decimal? @map("unit_price") @db.Decimal(18, 4)
   dailyQty     Decimal @map("daily_qty") @db.Decimal(18, 4)
   accumulatedQty Decimal @map("accumulated_qty") @db.Decimal(18, 4)
   remark       String  @default("")

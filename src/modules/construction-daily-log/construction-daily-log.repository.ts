@@ -3,6 +3,10 @@ import { Prisma } from '@prisma/client'
 import { prisma } from '../../lib/db.js'
 import { notDeleted, softDeleteSet } from '../../shared/soft-delete.js'
 import type { ConstructionDailyLogCreateInput } from '../../schemas/construction-daily-log.js'
+import {
+  collectLineageItemsByItemKeys,
+  mapLatestApprovedPccesItemIdsToItemKeys,
+} from '../pcces-import/pcces-item-lineage.js'
 
 function parseDateOnly(iso: string): Date {
   const [y, m, d] = iso.split('-').map(Number)
@@ -47,7 +51,9 @@ export const constructionDailyLogRepository = {
       include: {
         workItems: {
           orderBy: { sortOrder: 'asc' },
-          include: { pccesItem: { select: { itemNo: true } } },
+          include: {
+            pccesItem: { select: { itemNo: true, itemKind: true, itemKey: true, importId: true } },
+          },
         },
         materials: { orderBy: { sortOrder: 'asc' } },
         personnelEquipmentRows: { orderBy: { sortOrder: 'asc' } },
@@ -108,6 +114,7 @@ export const constructionDailyLogRepository = {
             workItemName: w.workItemName,
             unit: w.unit,
             contractQty: w.contractQty,
+            unitPrice: w.unitPrice ?? null,
             dailyQty: w.dailyQty,
             accumulatedQty: w.accumulatedQty,
             remark: w.remark,
@@ -212,6 +219,7 @@ export const constructionDailyLogRepository = {
             workItemName: w.workItemName,
             unit: w.unit,
             contractQty: w.contractQty,
+            unitPrice: w.unitPrice ?? null,
             dailyQty: w.dailyQty,
             accumulatedQty: w.accumulatedQty,
             remark: w.remark,
@@ -253,7 +261,8 @@ export const constructionDailyLogRepository = {
   },
 
   /**
-   * 同一 pccesItemId、同專案、填表日期早於 logDate 之 dailyQty 加總（不含當日其他日誌）。
+   * 填表日期早於 logDate 之 dailyQty 加總，**依 itemKey 跨已核定 PCCES 版**（不含當日其他日誌）。
+   * `pccesItemIds` 須為「目前最新核定版」之工項 id；回傳鍵為該 id，值為同 itemKey 於各版歷史日誌之合計。
    * excludeLogId：更新日誌時排除自身，避免重複計入舊稿。
    */
   async sumDailyQtyByPccesItemsBeforeLogDate(
@@ -268,10 +277,17 @@ export const constructionDailyLogRepository = {
     }
     if (pccesItemIds.length === 0) return map
 
+    const latestIdToKey = await mapLatestApprovedPccesItemIdsToItemKeys(projectId, pccesItemIds)
+    const itemKeys = [...new Set(latestIdToKey.values())]
+    if (itemKeys.length === 0) return map
+
+    const { lineageIds, lineageIdToItemKey } = await collectLineageItemsByItemKeys(projectId, itemKeys)
+    if (lineageIds.length === 0) return map
+
     const groups = await prisma.constructionDailyLogWorkItem.groupBy({
       by: ['pccesItemId'],
       where: {
-        pccesItemId: { in: pccesItemIds },
+        pccesItemId: { in: lineageIds },
         log: {
           projectId,
           ...notDeleted,
@@ -281,10 +297,74 @@ export const constructionDailyLogRepository = {
       },
       _sum: { dailyQty: true },
     })
+
+    const sumByItemKey = new Map<number, Prisma.Decimal>()
     for (const g of groups) {
-      if (g.pccesItemId) {
-        map.set(g.pccesItemId, g._sum.dailyQty ?? new Prisma.Decimal(0))
-      }
+      if (!g.pccesItemId) continue
+      const key = lineageIdToItemKey.get(g.pccesItemId)
+      if (key === undefined) continue
+      const add = g._sum.dailyQty ?? new Prisma.Decimal(0)
+      sumByItemKey.set(key, (sumByItemKey.get(key) ?? new Prisma.Decimal(0)).plus(add))
+    }
+
+    for (const id of pccesItemIds) {
+      const key = latestIdToKey.get(id)
+      if (key === undefined) continue
+      map.set(id, sumByItemKey.get(key) ?? new Prisma.Decimal(0))
+    }
+    return map
+  },
+
+  /**
+   * 截至 asOfDateInclusive（UTC 日曆天 **含當日**）之全部施工日誌，加總 **本日完成（dailyQty）**。
+   * **依 itemKey 跨已核定版**（與 `sumDailyQtyByPccesItemsBeforeLogDate` 相同聚合方式）。
+   * `pccesItemIds` 須為「目前最新核定版」末層 id；回傳鍵為該 id。
+   * 供估驗「施工累計」：勿僅取單一列 `accumulatedQty`，以免跨多日時只反映其中一天。
+   */
+  async sumDailyQtyByPccesItemsThroughDateInclusive(
+    projectId: string,
+    pccesItemIds: string[],
+    asOfDateInclusive: Date
+  ): Promise<Map<string, Prisma.Decimal>> {
+    const map = new Map<string, Prisma.Decimal>()
+    for (const id of pccesItemIds) {
+      map.set(id, new Prisma.Decimal(0))
+    }
+    if (pccesItemIds.length === 0) return map
+
+    const latestIdToKey = await mapLatestApprovedPccesItemIdsToItemKeys(projectId, pccesItemIds)
+    const itemKeys = [...new Set(latestIdToKey.values())]
+    if (itemKeys.length === 0) return map
+
+    const { lineageIds, lineageIdToItemKey } = await collectLineageItemsByItemKeys(projectId, itemKeys)
+    if (lineageIds.length === 0) return map
+
+    const groups = await prisma.constructionDailyLogWorkItem.groupBy({
+      by: ['pccesItemId'],
+      where: {
+        pccesItemId: { in: lineageIds },
+        log: {
+          projectId,
+          ...notDeleted,
+          logDate: { lte: asOfDateInclusive },
+        },
+      },
+      _sum: { dailyQty: true },
+    })
+
+    const sumByItemKey = new Map<number, Prisma.Decimal>()
+    for (const g of groups) {
+      if (!g.pccesItemId) continue
+      const key = lineageIdToItemKey.get(g.pccesItemId)
+      if (key === undefined) continue
+      const add = g._sum.dailyQty ?? new Prisma.Decimal(0)
+      sumByItemKey.set(key, (sumByItemKey.get(key) ?? new Prisma.Decimal(0)).plus(add))
+    }
+
+    for (const id of pccesItemIds) {
+      const key = latestIdToKey.get(id)
+      if (key === undefined) continue
+      map.set(id, sumByItemKey.get(key) ?? new Prisma.Decimal(0))
     }
     return map
   },

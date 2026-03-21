@@ -2,6 +2,10 @@ import { Prisma } from '@prisma/client'
 import { prisma } from '../../lib/db.js'
 import { notDeleted, softDeleteSet } from '../../shared/soft-delete.js'
 import type { ConstructionValuationCreateInput } from '../../schemas/construction-valuation.js'
+import {
+  collectLineageItemsByItemKeys,
+  mapLatestApprovedPccesItemIdsToItemKeys,
+} from '../pcces-import/pcces-item-lineage.js'
 
 function parseDateOnly(iso: string | null | undefined): Date | null {
   if (!iso) return null
@@ -53,7 +57,8 @@ export const constructionValuationRepository = {
   },
 
   /**
-   * 同專案、同 pccesItemId 之「其他估驗單」本次估驗數量加總（不含軟刪、不含指定估驗單）。
+   * 同專案「其他估驗單」本次估驗數量加總（不含軟刪、不含指定估驗單）。
+   * **依 itemKey 跨版**：舊版估驗單若綁舊 PccesItem.id，與最新版同 itemKey 者合併加總後，回傳鍵為「最新核定版」之 id。
    */
   async sumCurrentPeriodQtyByPccesItemsExcludingValuation(
     projectId: string,
@@ -66,10 +71,17 @@ export const constructionValuationRepository = {
     }
     if (pccesItemIds.length === 0) return map
 
+    const latestIdToKey = await mapLatestApprovedPccesItemIdsToItemKeys(projectId, pccesItemIds)
+    const itemKeys = [...new Set(latestIdToKey.values())]
+    if (itemKeys.length === 0) return map
+
+    const { lineageIds, lineageIdToItemKey } = await collectLineageItemsByItemKeys(projectId, itemKeys)
+    if (lineageIds.length === 0) return map
+
     const groups = await prisma.constructionValuationLine.groupBy({
       by: ['pccesItemId'],
       where: {
-        pccesItemId: { in: pccesItemIds },
+        pccesItemId: { in: lineageIds },
         valuation: {
           projectId,
           ...notDeleted,
@@ -78,10 +90,20 @@ export const constructionValuationRepository = {
       },
       _sum: { currentPeriodQty: true },
     })
+
+    const sumByItemKey = new Map<number, Prisma.Decimal>()
     for (const g of groups) {
-      if (g.pccesItemId) {
-        map.set(g.pccesItemId, g._sum.currentPeriodQty ?? new Prisma.Decimal(0))
-      }
+      if (!g.pccesItemId) continue
+      const key = lineageIdToItemKey.get(g.pccesItemId)
+      if (key === undefined) continue
+      const add = g._sum.currentPeriodQty ?? new Prisma.Decimal(0)
+      sumByItemKey.set(key, (sumByItemKey.get(key) ?? new Prisma.Decimal(0)).plus(add))
+    }
+
+    for (const id of pccesItemIds) {
+      const key = latestIdToKey.get(id)
+      if (key === undefined) continue
+      map.set(id, sumByItemKey.get(key) ?? new Prisma.Decimal(0))
     }
     return map
   },

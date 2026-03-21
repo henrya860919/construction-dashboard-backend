@@ -9,6 +9,11 @@ import {
   constructionDailyLogUpdateSchema,
 } from '../../schemas/construction-daily-log.js'
 import { pccesImportRepository } from '../pcces-import/pcces-import.repository.js'
+import {
+  allowsUserEnteredQtyForPccesItemKind,
+  isStructuralLeaf,
+  parentItemKeysWithChildren,
+} from '../pcces-import/pcces-item-tree.js'
 import { constructionDailyLogRepository } from './construction-daily-log.repository.js'
 
 type AuthUser = {
@@ -94,6 +99,15 @@ async function normalizeConstructionDailyLogBody(
     )
   }
 
+  const treeShape =
+    pccesIds.length === 0
+      ? []
+      : await prisma.pccesItem.findMany({
+          where: { importId: latest!.id, ...notDeleted },
+          select: { itemKey: true, parentItemKey: true },
+        })
+  const parentsWithChildren = parentItemKeysWithChildren(treeShape)
+
   const items =
     pccesIds.length === 0
       ? []
@@ -101,7 +115,6 @@ async function normalizeConstructionDailyLogBody(
           where: {
             id: { in: pccesIds },
             importId: latest!.id,
-            itemKind: 'general',
             ...notDeleted,
           },
         })
@@ -139,37 +152,83 @@ async function normalizeConstructionDailyLogBody(
     }
 
     const item = itemById.get(w.pccesItemId)
-    if (!item) {
-      throw new AppError(400, 'BAD_REQUEST', 'PCCES 工項無效或不在目前核定版本中')
+    if (!item || !isStructuralLeaf(item, parentsWithChildren)) {
+      throw new AppError(
+        400,
+        'BAD_REQUEST',
+        'PCCES 工項無效、非末層或不在目前核定版本中'
+      )
     }
 
     const daily = decQty(w.dailyQty)
     if (daily.isNeg()) {
       throw new AppError(400, 'VALIDATION_ERROR', '本日完成數量不可為負')
     }
+    if (!allowsUserEnteredQtyForPccesItemKind(item.itemKind) && !daily.isZero()) {
+      throw new AppError(400, 'VALIDATION_ERROR', '此 PCCES 類型不可填寫本日完成數量')
+    }
 
     const prior = priorMap.get(w.pccesItemId) ?? new Prisma.Decimal(0)
-    const contract = item.quantity
+    /** 契約數／名稱／單位以請求正文快照為準，避免換版後覆寫歷史日誌列 */
+    const contract = decQty(w.contractQty)
+    if (contract.isNeg()) {
+      throw new AppError(400, 'VALIDATION_ERROR', '契約數量不可為負')
+    }
     const accumulated = prior.plus(daily)
     if (accumulated.gt(contract)) {
       throw new AppError(400, 'WORK_ITEM_QTY_EXCEEDED', '累計完成數量不可超過契約數量')
     }
 
-    nextWork.push({
+    const pccesRow: ConstructionDailyLogCreateInput['workItems'][number] = {
       pccesItemId: item.id,
-      workItemName: item.description,
-      unit: item.unit,
+      workItemName: w.workItemName,
+      unit: w.unit,
       contractQty: contract.toString(),
       dailyQty: daily.toString(),
       accumulatedQty: accumulated.toString(),
       remark: w.remark,
-    })
+    }
+    if (w.unitPrice !== undefined) {
+      pccesRow.unitPrice = decQty(w.unitPrice).toString()
+    }
+    nextWork.push(pccesRow)
   }
 
   return { ...body, workItems: nextWork }
 }
 
-function serializeLog(
+async function structuralLeafByPccesItemId(
+  workItems: {
+    pccesItemId: string | null
+    pccesItem: { importId: string; itemKey: number } | null
+  }[]
+): Promise<Map<string, boolean>> {
+  const map = new Map<string, boolean>()
+  const importIds = new Set<string>()
+  for (const w of workItems) {
+    if (w.pccesItemId && w.pccesItem) importIds.add(w.pccesItem.importId)
+  }
+  const parentsByImport = new Map<string, Set<number>>()
+  for (const iid of importIds) {
+    const shape = await prisma.pccesItem.findMany({
+      where: { importId: iid, ...notDeleted },
+      select: { itemKey: true, parentItemKey: true },
+    })
+    parentsByImport.set(iid, parentItemKeysWithChildren(shape))
+  }
+  for (const w of workItems) {
+    if (!w.pccesItemId || !w.pccesItem) continue
+    const parents = parentsByImport.get(w.pccesItem.importId)
+    if (!parents) continue
+    map.set(
+      w.pccesItemId,
+      isStructuralLeaf({ itemKey: w.pccesItem.itemKey }, parents)
+    )
+  }
+  return map
+}
+
+async function serializeLog(
   row: NonNullable<Awaited<ReturnType<typeof constructionDailyLogRepository.findByIdForProject>>>
 ) {
   const plannedProgress = computePlannedProgressPercent({
@@ -177,6 +236,8 @@ function serializeLog(
     startDate: row.startDate,
     approvedDurationDays: row.approvedDurationDays,
   })
+
+  const leafByPccesItemId = await structuralLeafByPccesItemId(row.workItems)
 
   return {
     id: row.id,
@@ -213,9 +274,15 @@ function serializeLog(
       id: w.id,
       pccesItemId: w.pccesItemId,
       itemNo: w.pccesItem?.itemNo ?? null,
+      pccesItemKind: w.pccesItem?.itemKind ?? null,
+      pccesStructuralLeaf:
+        w.pccesItemId == null
+          ? null
+          : (leafByPccesItemId.get(w.pccesItemId) ?? true),
       workItemName: w.workItemName,
       unit: w.unit,
       contractQty: w.contractQty.toString(),
+      unitPrice: w.unitPrice != null ? w.unitPrice.toString() : null,
       dailyQty: w.dailyQty.toString(),
       accumulatedQty: w.accumulatedQty.toString(),
       remark: w.remark,
@@ -280,7 +347,7 @@ export const constructionDailyLogService = {
     await assertProjectModuleAction(user, projectId, 'construction.diary', 'read')
     const row = await constructionDailyLogRepository.findByIdForProject(projectId, logId)
     if (!row) throw new AppError(404, 'NOT_FOUND', '找不到施工日誌')
-    return serializeLog(row)
+    return await serializeLog(row)
   },
 
   async create(projectId: string, user: AuthUser, raw: unknown) {
@@ -325,7 +392,7 @@ export const constructionDailyLogService = {
     if (!ok) throw new AppError(404, 'NOT_FOUND', '找不到施工日誌')
     const row = await constructionDailyLogRepository.findByIdForProject(projectId, logId)
     if (!row) throw new AppError(500, 'INTERNAL_ERROR', '更新後讀取失敗')
-    return serializeLog(row)
+    return await serializeLog(row)
   },
 
   async delete(projectId: string, logId: string, user: AuthUser) {
@@ -336,8 +403,9 @@ export const constructionDailyLogService = {
   },
 
   /**
-   * 施工日誌（一）工項選擇器：最新「已核定」版之 **general**（可填數量之末層），
-   * 依 `parentItemKey` 分組並帶出**上一層父列**（僅展示項次／說明／單位，不填數量；父層必須至少有一筆子 general）。
+   * 施工日誌（一）工項選擇器：**樹狀與 pccesItemId 為「最新核定版」**（儲存時與 normalize 一致）；
+   * **契約數量、單價、工程名稱、單位**依 **填表日** 對應之「當日有效核定版」以 **itemKey** 覆寫（3/21 仍見舊版數字，3/22 起見新版）。
+   * 累計（迄前日）仍依 itemKey 跨版加總。排序同「PCCES 明細」：**itemKey 升序**；`isStructuralLeaf` false 為目錄列。
    */
   async getPccesWorkItemPicker(
     projectId: string,
@@ -351,25 +419,63 @@ export const constructionDailyLogService = {
       throw new AppError(400, 'BAD_REQUEST', '填表日期無效')
     }
     const latest = await pccesImportRepository.findLatestApprovedImport(projectId)
-    type ChildOut = {
+    const effective = await pccesImportRepository.findApprovedImportEffectiveOnLogDate(
+      projectId,
+      logDate
+    )
+    type RowOut = {
       pccesItemId: string
+      itemKey: number
+      parentItemKey: number | null
       itemNo: string
+      itemKind: string
       workItemName: string
       unit: string
       contractQty: string
-      priorAccumulatedQty: string
+      unitPrice: string
+      isStructuralLeaf: boolean
+      /** 非末層為 null */
+      priorAccumulatedQty: string | null
     }
     type GroupOut = {
       parent: { itemNo: string; workItemName: string; unit: string } | null
-      children: ChildOut[]
+      children: RowOut[]
     }
-    if (!latest) {
+    if (!latest || !effective) {
       return {
         pccesImport: null as null,
+        rows: [] as RowOut[],
         groups: [] as GroupOut[],
-        items: [] as ChildOut[],
+        items: [] as RowOut[],
       }
     }
+
+    const asOfItems =
+      effective.id === latest.id
+        ? null
+        : await prisma.pccesItem.findMany({
+            where: { importId: effective.id, ...notDeleted },
+            select: {
+              itemKey: true,
+              itemNo: true,
+              description: true,
+              unit: true,
+              quantity: true,
+              unitPrice: true,
+            },
+          })
+    const asOfByItemKey = new Map(
+      (asOfItems ?? []).map((x) => [
+        x.itemKey,
+        {
+          itemNo: x.itemNo,
+          description: x.description,
+          unit: x.unit,
+          quantity: x.quantity,
+          unitPrice: x.unitPrice,
+        },
+      ])
+    )
 
     const allItems = await prisma.pccesItem.findMany({
       where: { importId: latest.id, ...notDeleted },
@@ -383,92 +489,70 @@ export const constructionDailyLogService = {
         description: true,
         unit: true,
         quantity: true,
+        unitPrice: true,
       },
     })
-    const byItemKey = new Map(allItems.map((i) => [i.itemKey, i]))
-    const generals = allItems.filter((i) => i.itemKind === 'general')
+    const parentsWithChildrenPicker = parentItemKeysWithChildren(allItems)
+    const leafIds = new Set(
+      allItems.filter((i) => isStructuralLeaf(i, parentsWithChildrenPicker)).map((i) => i.id)
+    )
+    const leafIdList = [...leafIds]
 
-    const childrenByParentKey = new Map<number, typeof generals>()
-    const orphans: typeof generals = []
-    for (const g of generals) {
-      const pk = g.parentItemKey
-      if (pk == null) {
-        orphans.push(g)
-        continue
+    const priorMap =
+      leafIdList.length === 0
+        ? new Map<string, Prisma.Decimal>()
+        : await constructionDailyLogRepository.sumDailyQtyByPccesItemsBeforeLogDate(
+            projectId,
+            leafIdList,
+            logDate,
+            excludeLogId
+          )
+
+    const rows: RowOut[] = allItems.map((r) => {
+      const isLeaf = leafIds.has(r.id)
+      const snap = asOfByItemKey.get(r.itemKey)
+      const itemNo = snap?.itemNo ?? r.itemNo
+      const desc = snap?.description ?? r.description
+      const unit = snap?.unit ?? r.unit
+      const qty = snap?.quantity ?? r.quantity
+      const price = snap?.unitPrice ?? r.unitPrice
+      return {
+        pccesItemId: r.id,
+        itemKey: r.itemKey,
+        parentItemKey: r.parentItemKey,
+        itemNo,
+        itemKind: r.itemKind,
+        workItemName: desc,
+        unit,
+        contractQty: qty.toString(),
+        unitPrice: price.toString(),
+        isStructuralLeaf: isLeaf,
+        priorAccumulatedQty: isLeaf
+          ? (priorMap.get(r.id) ?? new Prisma.Decimal(0)).toString()
+          : null,
       }
-      if (!byItemKey.has(pk)) continue
-      const list = childrenByParentKey.get(pk) ?? []
-      list.push(g)
-      childrenByParentKey.set(pk, list)
-    }
-
-    const mapChild = (r: (typeof generals)[0]): ChildOut => ({
-      pccesItemId: r.id,
-      itemNo: r.itemNo,
-      workItemName: r.description,
-      unit: r.unit,
-      contractQty: r.quantity.toString(),
-      priorAccumulatedQty: '0',
     })
 
-    const allChildIds: string[] = []
-    const groups: GroupOut[] = []
-    const sortedParentKeys = [...childrenByParentKey.keys()].sort((a, b) => a - b)
-    for (const pk of sortedParentKeys) {
-      const kids = childrenByParentKey.get(pk)
-      if (!kids?.length) continue
-      kids.sort((a, b) => a.itemKey - b.itemKey)
-      const parentRow = byItemKey.get(pk)
-      if (!parentRow) continue
-      allChildIds.push(...kids.map((k) => k.id))
-      groups.push({
-        parent: {
-          itemNo: parentRow.itemNo,
-          workItemName: parentRow.description,
-          unit: parentRow.unit,
-        },
-        children: kids.map((r) => mapChild(r)),
-      })
-    }
-    if (orphans.length > 0) {
-      orphans.sort((a, b) => a.itemKey - b.itemKey)
-      allChildIds.push(...orphans.map((o) => o.id))
-      groups.push({
-        parent: null,
-        children: orphans.map((r) => mapChild(r)),
-      })
-    }
+    const items = rows.filter((x) => x.isStructuralLeaf)
 
-    const priorMap = await constructionDailyLogRepository.sumDailyQtyByPccesItemsBeforeLogDate(
-      projectId,
-      allChildIds,
-      logDate,
-      excludeLogId
-    )
-    for (const g of groups) {
-      for (const c of g.children) {
-        c.priorAccumulatedQty = (priorMap.get(c.pccesItemId) ?? new Prisma.Decimal(0)).toString()
-      }
-    }
-
-    const items: ChildOut[] = groups.flatMap((g) => g.children)
-
-    const parentRow = await pccesImportRepository.findByIdForProject(projectId, latest.id)
+    /** 回傳「契約欄位所依版本」（填表日有效版），與 `pccesItemId` 所屬之最新版可能不同 */
+    const importMeta = await pccesImportRepository.findByIdForProject(projectId, effective.id)
     return {
-      pccesImport: parentRow
+      pccesImport: importMeta
         ? {
-            id: parentRow.id,
-            version: parentRow.version,
-            approvedAt: parentRow.approvedAt?.toISOString() ?? null,
-            approvedById: parentRow.approvedById,
+            id: importMeta.id,
+            version: importMeta.version,
+            approvedAt: importMeta.approvedAt?.toISOString() ?? null,
+            approvedById: importMeta.approvedById,
           }
         : {
-            id: latest.id,
-            version: latest.version,
+            id: effective.id,
+            version: effective.version,
             approvedAt: null as string | null,
             approvedById: null as string | null,
           },
-      groups,
+      rows,
+      groups: [] as GroupOut[],
       items,
     }
   },

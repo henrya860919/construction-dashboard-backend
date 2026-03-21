@@ -177,23 +177,25 @@ Base URL：`/api/v1`。成功回應格式：`{ data, meta? }`；錯誤：`{ erro
 ### 3.8 PCCES／eTender XML 匯入（施工日誌工項來源）
 
 - **資料表**：`PccesImport`（專案內版本遞增）、`PccesItem`（單次匯入之 PayItem 列，含 `remark`／`percent`；軟刪欄位保留供未來）。解析使用 **`fast-xml-parser`**，工項依 **`itemKey` 升冪** 儲存。
-- **權限**：**`construction.pcces`**（與 **`construction.diary`** 分離；租戶開通／成員矩陣獨立勾選）— 列表／明細為 **read**，上傳為 **create**，**核定**為 **update**，刪除匯入版本為 **delete**（軟刪除該版 `PccesImport` 與其 `PccesItem`，並嘗試軟刪歸檔 XML）。
+- **權限**：**`construction.pcces`**（與 **`construction.diary`** 分離；租戶開通／成員矩陣獨立勾選）— 列表／明細為 **read**，上傳 XML／**Excel 變更確認匯入**為 **create**，**核定**為 **update**，刪除匯入版本為 **delete**（軟刪除該版 `PccesImport`、`PccesItem`、`PccesItemChange`，並嘗試軟刪歸檔 XML）。
 - **核定**：`PccesImport.approved_at`／`approved_by_id`；**施工日誌工項僅能引用「已核定」版本中、version 最大者**之 `general` 列（見 `findLatestApprovedImport`）。同一版可重複呼叫核定（已核定則 idempotent）。
 - **檔案歸檔**：成功寫入工項後另以 `fileService.uploadFile` 上傳，`category=pcces_xml`、`businessId=<importId>`；對應模組 **`construction.pcces`**；失敗不影響已解析之 DB 資料。
 
 | 方法 | 路徑 | 說明 |
 |------|------|------|
-| GET | `/api/v1/projects/:projectId/pcces-imports` | 該專案匯入版本列表（新到舊） |
-| POST | `/api/v1/projects/:projectId/pcces-imports` | `multipart/form-data`，欄位 **`file`**（`.xml`）；解析 ETenderSheet／DetailList／PayItem；建立新版並寫入 `PccesItem` |
+| GET | `/api/v1/projects/:projectId/pcces-imports` | 該專案匯入版本列表（新到舊）；每筆含 **`versionLabel`**（可為空：第 1 版顯示語意「原契約」、第 2 版起顯示「第 N 版」由前端決定） |
+| POST | `/api/v1/projects/:projectId/pcces-imports` | `multipart/form-data`，欄位 **`file`**（`.xml`）；可選 **`versionLabel`**（第 1 版若缺省則後端存為「原契約」；**第 2 版起必填**非空白）；解析 ETenderSheet／DetailList／PayItem；建立新版並寫入 `PccesItem` |
+| PATCH | `/api/v1/projects/:projectId/pcces-imports/:importId` | JSON `{ "versionLabel": string }`（≤200 字，可空字串以清空自訂名稱）；**update** 權限；回傳該次匯入摘要 |
 | GET | `/api/v1/projects/:projectId/pcces-imports/:importId` | 單次匯入摘要 |
 | GET | `/api/v1/projects/:projectId/pcces-imports/:importId/items` | 工項列表；query：`all=1` 一次回傳全部（單筆匯入上限 10 萬筆）；否則 `page`、`limit`（預設分頁，上限見共用 `parsePageLimit`）；`itemKind`：`general` \| `mainItem`，省略則全部；回傳 `{ data: { import, items }, meta: { page, limit, total } }` |
+| POST | `/api/v1/projects/:projectId/pcces-imports/:importId/excel-apply` | **Excel 變更匯入**：JSON body（見 `pccesExcelApplyBodySchema`，含必填 **`versionLabel`**）；`:importId` 為**基底版**；交易內複製該版全部工項至**新版本**（`document_type=excel_change`）、套用 auto／manual 變更、重算階層複價、寫入 `pcces_item_changes`；**有變更之工項**其 `PccesItem.remark` 會在尾端加上 **`（第 N 次變更）`**（`N`＝專案內該 `itemKey` 曾於 Excel 變更版被異動的累計次數，含本次；寫入前會先剝除備註尾端既有同格式後綴）；手動增列視為第 1 次；回 **201** 與新匯入摘要 |
 | POST | `/api/v1/projects/:projectId/pcces-imports/:importId/approve` | **核定**該版；寫入 `approved_at`／`approved_by_id`；回傳該次匯入摘要（含 `approvedAt` ISO） |
 | DELETE | `/api/v1/projects/:projectId/pcces-imports/:importId` | 軟刪除該次匯入與其工項；成功回 `{ data: { ok: true } }` |
 
 ### 3.9 公共工程施工日誌（依附表四）
 
-- **資料表**：`ConstructionDailyLog`（主檔，軟刪除）、`ConstructionDailyLogWorkItem`（可選 **`pcces_item_id`** → `PccesItem`，供累計依 `pccesItemId` 聚合）、`ConstructionDailyLogMaterial`、`ConstructionDailyLogPersonnelEquipment`（子表隨主檔以 `log_id` 關聯，`onDelete: Cascade`；更新時以交易 **刪除子表後重建**）。
-- **工項與 PCCES**：`workItems[].pccesItemId` 可選；若有，伺服器會驗證屬目前**最新已核定**版之 `general` 列，並以**填表日期之前**其他日誌之 `dailyQty` 加總為 prior，寫入 **`accumulatedQty = prior + dailyQty`**，且 **`accumulatedQty ≤ 契約數量`**（`WORK_ITEM_QTY_EXCEEDED`）。手填列省略 `pccesItemId`，累計由客戶提供但仍受契約上限檢查。
+- **資料表**：`ConstructionDailyLog`（主檔，軟刪除）、`ConstructionDailyLogWorkItem`（可選 **`pcces_item_id`** → `PccesItem`，供累計依 `pccesItemId`／`itemKey` 聚合；可選 **`unit_price`** 為綁定 PCCES 時之**單價快照**）、`ConstructionDailyLogMaterial`、`ConstructionDailyLogPersonnelEquipment`（子表隨主檔以 `log_id` 關聯，`onDelete: Cascade`；更新時以交易 **刪除子表後重建**）。
+- **工項與 PCCES**：`workItems[].pccesItemId` 可選；若有，伺服器會驗證屬目前**最新已核定**版之末層工項。填表日期之前之 **prior** 為同專案、**同 `itemKey` 於所有已核定 PCCES 版**之工項列，在其他日誌之 `dailyQty` 加總（跨版延續，不因換版換 `PccesItem.id` 而歸零）；寫入 **`accumulatedQty = prior + dailyQty`**。契約上限與顯示用之 **`work_item_name`／`unit`／`contract_qty`** 以請求正文（或 GET 後再 PATCH 所帶）之**快照**為準，**不以**換版後最新 `PccesItem` 覆寫；檢核 **`prior + dailyQty ≤ contract_qty`（正文）**（`WORK_ITEM_QTY_EXCEEDED`）。可選 **`workItems[].unitPrice`** 寫入 **`unit_price` 快照**；省略則存 `null`。手填列省略 `pccesItemId`，累計由客戶提供但仍受契約上限檢查。估驗之「前期已估驗」與「日誌累計至某日」對綁定 PCCES 之列亦**依 `itemKey` 跨版**彙總。
 - **權限**：**`construction.diary`** — 列表／詳情／預設值為 **read**，建立 **create**，更新 **update**，刪除 **delete**（主檔軟刪除）。
 - **同專案同填表日期**：不可重複（服務層 `findFirst` 檢查）；回傳 **409 CONFLICT**。
 - **預定進度（%）**：不存 DB；GET 時依 **開工日**、**核定工期（天）**、**填表日期** 線性推算（與前端預覽公式一致），資料不足時為 `null`。實際進度為人工填寫欄位。
@@ -201,10 +203,10 @@ Base URL：`/api/v1`。成功回應格式：`{ data, meta? }`；錯誤：`{ erro
 | 方法 | 路徑 | 說明 |
 |------|------|------|
 | GET | `/api/v1/projects/:projectId/construction-daily-logs/defaults` | 新增表單預設：自 `Project` 帶出工程名稱、承攬廠商、開工日、工期（天） |
-| GET | `/api/v1/projects/:projectId/construction-daily-logs/pcces-work-items` | 施工項目選擇器；query：**`logDate=YYYY-MM-DD`**（必填）、`excludeLogId`（編輯時排除自身）；回 `{ data: { pccesImport, groups: [{ parent: { itemNo, workItemName, unit } \| null, children: [...] }], items: [...] } }`：`children` 僅 **general** 明細（可填數量）；有 `parentItemKey` 者依父列分組，**父列僅供對照**（不填數量）；`parent` 為 `null` 之群組為無上層之 general；`items` 為所有 `children` 扁平列表 |
+| GET | `/api/v1/projects/:projectId/construction-daily-logs/pcces-work-items` | 施工項目選擇器；query：**`logDate=YYYY-MM-DD`**（必填）、`excludeLogId`（編輯時排除自身）；回 `{ data: { pccesImport, rows, groups, items } }`：**`pccesImport`** 為 **填表日（UTC 日曆天）當日或以前已核定之最高 version**（契約欄位所依版本）。**`rows`** 之 **樹狀、`pccesItemId` 仍屬「目前最新核定版」**（與儲存／normalize 一致）；**項次、工程項目、單位、契約數量、單價** 則依 **`itemKey`** 自上述「填表日有效版」覆寫（例：3/22 換版後，填表日 3/21 仍見舊版契約數與單價；3/22 起見新版）。**`priorAccumulatedQty`** 仍為同 `itemKey` 跨版累計至填表日前一日。排序 **`itemKey` 升序**；`isStructuralLeaf` 依**最新版**樹；`items`＝末層子集；**`groups` 為空陣列** |
 | GET | `/api/v1/projects/:projectId/construction-daily-logs` | 分頁列表；query：`page`、`limit`；`{ data, meta: { page, limit, total } }` |
 | POST | `/api/v1/projects/:projectId/construction-daily-logs` | 建立；body 見 Zod `constructionDailyLogCreateSchema`（含 `workItems`、`materials`、`personnelEquipmentRows` 陣列） |
-| GET | `/api/v1/projects/:projectId/construction-daily-logs/:logId` | 單筆含子表；含唯讀 `plannedProgress` |
+| GET | `/api/v1/projects/:projectId/construction-daily-logs/:logId` | 單筆含子表；含唯讀 `plannedProgress`；`workItems[]` 含 **`pccesStructuralLeaf`**（`null`＝手填列；綁定 PCCES 時表是否為結構末層，供前端隱藏目錄列之單價等） |
 | PATCH | `/api/v1/projects/:projectId/construction-daily-logs/:logId` | 整張覆寫（含子表） |
 | DELETE | `/api/v1/projects/:projectId/construction-daily-logs/:logId` | 軟刪除主檔；回 `{ data: { ok: true } }` |
 
@@ -212,10 +214,10 @@ Base URL：`/api/v1`。成功回應格式：`{ data, meta? }`；錯誤：`{ erro
 
 | 方法 | 路徑 | 說明 |
 |------|------|------|
-| GET | `/api/v1/projects/:projectId/construction-valuations/pcces-lines` | PCCES 明細選擇器（最新核定版 **general**）；query：`excludeValuationId`（編輯時排除本單）；回 `{ data: { pccesImport, groups, items } }`，`items` 含 `priorBilledQty`、`maxQty`、`suggestedAvailableQty` |
+| GET | `/api/v1/projects/:projectId/construction-valuations/pcces-lines` | PCCES 明細選擇器；query：`excludeValuationId`（編輯時排除本單）、**`asOfDate=YYYY-MM-DD`**（可選；施工日誌累計算至此 UTC 日曆天**含當日**，省略則**今日 UTC**）；回 `{ data: { pccesImport, rows, groups, items } }`：**`rows`** 為全部工項、**`itemKey` 升序**；末層之 **`logAccumulatedQtyToDate`** 為同 **`itemKey` 跨版** 之 **`dailyQty` 加總**（非僅取單一列 `accumulated`）；並含 `priorBilledQty`、`maxQty`、`suggestedAvailableQty`；非末層上述欄位為 `null`；`items`＝末層子集；**`groups` 為空陣列** |
 | GET | `/api/v1/projects/:projectId/construction-valuations` | 分頁列表；query：`page`、`limit` |
 | POST | `/api/v1/projects/:projectId/construction-valuations` | 建立；body 見 Zod `constructionValuationCreateSchema`（`lines` 至少一列） |
-| GET | `/api/v1/projects/:projectId/construction-valuations/:valuationId` | 單筆；`lines` 依 PCCES 父階重排並含 `pccesParentItemKey`；`lineGroups` 標示區段（`lineStartIndex`／`lineCount`），有父階時 `parent` 帶 (六)(七) 子列加總；`pcces-lines` 的 `groups[].parent` 含 `itemKey` |
+| GET | `/api/v1/projects/:projectId/construction-valuations/:valuationId` | 單筆；`lines` 依 PCCES 父階重排並含 `pccesParentItemKey`；每列含 `logAccumulatedQtyToDate`（施工日誌 **`dailyQty` 依 itemKey 跨版加總** 至**表頭估驗日（含）**，無表頭則今日 UTC）與 `availableValuationQty`；`lineGroups` 標示區段（`lineStartIndex`／`lineCount`），有父階時 `parent` 帶 (六)(七) 子列加總 |
 | PATCH | `/api/v1/projects/:projectId/construction-valuations/:valuationId` | 整張覆寫（含子列） |
 | DELETE | `/api/v1/projects/:projectId/construction-valuations/:valuationId` | 軟刪除；回 `{ data: { ok: true } }` |
 

@@ -45,10 +45,10 @@ CREATE INDEX "construction_valuation_lines_valuation_id_idx" ON "construction_va
 CREATE INDEX "construction_valuation_lines_pcces_item_id_idx" ON "construction_valuation_lines"("pcces_item_id");
 
 -- AddForeignKey
-ALTER TABLE "construction_valuations" ADD CONSTRAINT "construction_valuations_project_id_fkey" FOREIGN KEY ("project_id") REFERENCES "projects"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "construction_valuations" ADD CONSTRAINT "construction_valuations_project_id_fkey" FOREIGN KEY ("project_id") REFERENCES "Project"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "construction_valuations" ADD CONSTRAINT "construction_valuations_created_by_id_fkey" FOREIGN KEY ("created_by_id") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "construction_valuations" ADD CONSTRAINT "construction_valuations_created_by_id_fkey" FOREIGN KEY ("created_by_id") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "construction_valuation_lines" ADD CONSTRAINT "construction_valuation_lines_valuation_id_fkey" FOREIGN KEY ("valuation_id") REFERENCES "construction_valuations"("id") ON DELETE CASCADE ON UPDATE CASCADE;

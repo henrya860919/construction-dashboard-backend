@@ -21,6 +21,12 @@ pccesImportsRouter.get(
   asyncHandler(pccesImportController.listItems.bind(pccesImportController))
 )
 
+/** POST .../pcces-imports/:importId/excel-apply — 以該版為基底套用 Excel 變更，產生新版本 */
+pccesImportsRouter.post(
+  '/:importId/excel-apply',
+  asyncHandler(pccesImportController.applyExcelChanges.bind(pccesImportController))
+)
+
 /** POST .../pcces-imports/:importId/approve — 核定該版（施工日誌始得引用） */
 pccesImportsRouter.post(
   '/:importId/approve',
@@ -31,6 +37,12 @@ pccesImportsRouter.post(
 pccesImportsRouter.delete(
   '/:importId',
   asyncHandler(pccesImportController.delete.bind(pccesImportController))
+)
+
+/** PATCH .../pcces-imports/:importId — 更新版本顯示名稱（body: { versionLabel }，空字串表示清除自訂名稱） */
+pccesImportsRouter.patch(
+  '/:importId',
+  asyncHandler(pccesImportController.patch.bind(pccesImportController))
 )
 
 /** GET .../pcces-imports/:importId */
